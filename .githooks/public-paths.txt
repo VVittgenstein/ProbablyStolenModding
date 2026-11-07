@@ -1,0 +1,8 @@
+.githooks/public-paths.txt
+F5ForceSave/src/
+F5SnapshotSave/src/
+GunsmithExpansion/src/
+GunsmithExpansion2077/src/
+KeptShotgun/src/
+MentorNoteAutoFile/src/
+Moneylending/src/
