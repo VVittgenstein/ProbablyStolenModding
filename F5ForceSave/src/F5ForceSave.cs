@@ -1,0 +1,1105 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using HarmonyLib;
+
+[assembly: System.Reflection.AssemblyTitle("F5ForceSave")]
+[assembly: System.Reflection.AssemblyVersion("1.6.1.0")]
+
+namespace F5ForceSave
+{
+    // Entry point found by the game's ModLoader, which loads mods once per launch and applies the
+    // Harmony patches in this assembly (Harmony ID "mod.<manifest ID>") before calling Init and OnEnable.
+    public sealed class F5ForceSaveMod : IMod
+    {
+        internal const string ModId = "F5ForceSave";
+        internal const string LogPrefix = "[F5ForceSave] ";
+        private static UnityEngine.GameObject host;
+
+        public void Init(ModManifest manifest)
+        {
+            UnityEngine.Debug.Log(LogPrefix + "v" + manifest.ModVersion + " loaded");
+            try
+            {
+                SaveKey.Load();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(LogPrefix + "reading the save key from the mod settings failed; the key is F5: " + e);
+            }
+            try
+            {
+                LoadKey.Load();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(LogPrefix + "reading the load key from the mod settings failed; the key is F8: " + e);
+            }
+            try
+            {
+                F5LoadKey.Load();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(LogPrefix + "reading the F5 save load key from the mod settings failed; the key is F7: " + e);
+            }
+        }
+
+        public void OnEnable()
+        {
+            ModHook.OnGameLoadedLate -= SaveExtras.OnGameLoaded;
+            ModHook.OnGameLoadedLate += SaveExtras.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= QuickLoad.OnGameLoaded;
+            ModHook.OnGameLoadedLate += QuickLoad.OnGameLoaded;
+            if (host != null)
+                return;
+            host = new UnityEngine.GameObject("F5ForceSave");
+            UnityEngine.Object.DontDestroyOnLoad(host);
+            host.AddComponent<F5Listener>();
+        }
+
+        public void OnDisable()
+        {
+            ModHook.OnGameLoadedLate -= SaveExtras.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= QuickLoad.OnGameLoaded;
+            if (host == null)
+                return;
+            UnityEngine.Object.Destroy(host);
+            host = null;
+        }
+    }
+
+    // F5 Quick Save Plus (F5SnapshotSave) finds this component by its type name and switches it off when both mods
+    // are enabled; it then handles the save key and the load key itself. The rows of both keys in the game options
+    // exist only while this component is on, so they are not shown while the keys would have no effect.
+    public sealed class F5Listener : UnityEngine.MonoBehaviour
+    {
+        private float nextAllowedTime;
+
+        private void OnEnable()
+        {
+            try
+            {
+                SaveKey.AddOption();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "adding the save key to the game options failed; it can still be set in the mod settings: " + e);
+            }
+            try
+            {
+                LoadKey.AddOption();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "adding the load key to the game options failed; it can still be set in the mod settings: " + e);
+            }
+            try
+            {
+                F5LoadKey.AddOption();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "adding the F5 save load key to the game options failed; it can still be set in the mod settings: " + e);
+            }
+        }
+
+        private void OnDisable()
+        {
+            try
+            {
+                SaveKey.RemoveOption();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "removing the save key from the game options failed: " + e);
+            }
+            try
+            {
+                LoadKey.RemoveOption();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "removing the load key from the game options failed: " + e);
+            }
+            try
+            {
+                F5LoadKey.RemoveOption();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "removing the F5 save load key from the game options failed: " + e);
+            }
+        }
+
+        private void Update()
+        {
+            // SuppressHotkeys is true while the game options wait for a key to bind and in the frame that ends the
+            // wait, so pressing either key there binds it without saving or loading.
+            if (KeyBindHelper.SuppressHotkeys || UnityEngine.Time.unscaledTime < nextAllowedTime || QuickLoad.Pending)
+                return;
+            bool save = UnityEngine.Input.GetKeyDown(SaveKey.Current);
+            bool load = !save && UnityEngine.Input.GetKeyDown(LoadKey.Current);
+            bool loadF5 = !save && !load && UnityEngine.Input.GetKeyDown(F5LoadKey.Current);
+            if (!save && !load && !loadF5)
+                return;
+            nextAllowedTime = UnityEngine.Time.unscaledTime + 1f;
+            try
+            {
+                if (save)
+                    QuickSave.TrySave();
+                else if (load)
+                    QuickLoad.TryLoad(this);
+                else
+                    QuickLoad.TryLoadLastF5(this);
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + (save ? "save" : "load") + " key handling failed: " + e);
+            }
+        }
+    }
+
+    // The save key, F5 unless the player changes it. The value is an entry of the game's mod configuration
+    // (ModHelper.GetConfig), which the game keeps in <persistentDataPath>\ModConfigs\F5ForceSave.json as the
+    // UnityEngine.KeyCode name under "save_key". Two parts of the game's own UI change it: a row that this mod adds
+    // to the Key Binds section of the game options, where the game waits for the next key press and refuses a key
+    // that another row uses, and this mod's settings window in the Mods panel, a list of the accepted names. The
+    // file can also be edited while the game is closed; the game replaces a name that is not in the list with F5
+    // when it reads the file.
+    internal static class SaveKey
+    {
+        internal const string ConfigKey = "save_key";
+        internal const string OptionId = "save_key";
+        private const string Section = "按键 / Key / Клавиши";
+        private static ConfigEntry<string> entry;
+
+        internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F5;
+
+        internal static void Load()
+        {
+            ModConfig config = ModHelper.GetConfig(F5ForceSaveMod.ModId);
+            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F5.ToString(), Section, Text.KeySettingLabel, Choices(), Text.KeySettingTooltip);
+            Apply(entry.Value);
+            entry.OnChanged += name =>
+            {
+                Apply(name);
+                UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "save key set to " + Current);
+            };
+            // Written at every start, so the file exists and shows the key in effect for players who edit it by hand.
+            config.Save();
+            UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "save key " + Current + " (" + config.FilePath + ", entry " + ConfigKey + ")");
+        }
+
+        private static void Apply(string name)
+        {
+            UnityEngine.KeyCode key;
+            if (TryParse(name, out key))
+            {
+                Current = key;
+                return;
+            }
+            Current = UnityEngine.KeyCode.F5;
+            UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "'" + name + "' is not a key this mod accepts; the save key is F5");
+        }
+
+        internal static bool TryParse(string name, out UnityEngine.KeyCode key)
+        {
+            key = UnityEngine.KeyCode.None;
+            UnityEngine.KeyCode parsed;
+            if (string.IsNullOrEmpty(name) || !Enum.TryParse(name, false, out parsed)
+                || !Enum.IsDefined(typeof(UnityEngine.KeyCode), parsed) || !Bindable(parsed))
+                return false;
+            key = parsed;
+            return true;
+        }
+
+        // The keyboard keys the game's key capture can return (every KeyCode above None and below Mouse0) except Escape,
+        // which cancels the capture. Since the game 1.0.0.12 the capture (KeyBindHelper.CaptureKeys, formerly
+        // KeyboardKeys) also returns Mouse1 to Mouse6; mouse keys are not taken here.
+        internal static bool Bindable(UnityEngine.KeyCode key)
+        {
+            return key > UnityEngine.KeyCode.None && key < UnityEngine.KeyCode.Mouse0 && key != UnityEngine.KeyCode.Escape;
+        }
+
+        // In KeyCode order. Names that share a value (RightMeta, RightCommand and RightApple, for example) appear
+        // once, as KeyCode.ToString gives them; the row in the game options stores the same text.
+        internal static string[] Choices()
+        {
+            var names = new List<string>();
+            foreach (UnityEngine.KeyCode key in Enum.GetValues(typeof(UnityEngine.KeyCode)))
+            {
+                string name = key.ToString();
+                if (Bindable(key) && !names.Contains(name))
+                    names.Add(name);
+            }
+            return names.ToArray();
+        }
+
+        private static void Set(UnityEngine.KeyCode key)
+        {
+            if (!Bindable(key))
+                return;
+            if (entry != null)
+                entry.Set(key.ToString()); // OnChanged applies it; the game writes the file
+            else
+                Current = key;
+        }
+
+        // The game's name for the key, as the Key Binds rows show it (F5, Left Shift, Numpad 0).
+        internal static string Name()
+        {
+            return KeyBindHelper.KeyName(Current);
+        }
+
+        // The game's own options are registered first (GameOptionRegistry.EnsureVanilla, otherwise run when the
+        // options window first opens), so the Key Binds section stays after the other sections and this row comes
+        // after the game's own key rows.
+        internal static void AddOption()
+        {
+            GameOptionRegistry.EnsureVanilla();
+            ModHelper.AddGameOptionKeyBind(F5ForceSaveMod.ModId, GameOptionRegistry.SECTION_KEYBIND, OptionId, Text.KeyOptionLabel, () => Current, Set);
+        }
+
+        internal static void RemoveOption()
+        {
+            ModHelper.RemoveGameOption(F5ForceSaveMod.ModId, OptionId);
+        }
+    }
+
+    // The game itself saves only at the start of a day (PlayerStore.SaveGame after the end-of-day sequence and
+    // after a new game). F5 calls the same SaveGame in the morning, while the shop is open and no customer is
+    // at the counter, and after closing. What SaveGame leaves out at those times is stored by SaveExtras in
+    // PlayerStore.modData, which is written into the same slot file, and put back after loading.
+    // StoreClientManager.chemicalFeedbackStack (customers queued for the next day after chemical sales) is
+    // ES3NonSerializable as well and is not stored; the game's own saves lose it in the same way.
+    internal static class QuickSave
+    {
+        internal static bool InProgress;
+        internal static bool SlotWritten;
+
+        internal static void TrySave()
+        {
+            PlayerStore store = PlayerStore.Instance;
+            StoreUIManager ui = StoreUIManager.Instance;
+            StoreStation station = StoreStation.Instance;
+            EmporiumEntry entry = EmporiumEntry.Instance;
+            if (store == null || ui == null || station == null || entry == null)
+                return;
+            if (StoreUIManager.IsAnyTyping())
+                return;
+
+            string refusal = Refusal(store, entry);
+            if (refusal != null)
+            {
+                Report(ui, refusal, false);
+                return;
+            }
+
+            InProgress = true;
+            SlotWritten = false;
+            try
+            {
+                SaveExtras.Write(store, entry, station);
+                store.SaveGame();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "SaveGame threw: " + e);
+            }
+            finally
+            {
+                InProgress = false;
+                SaveExtras.Clear();
+            }
+
+            if (SlotWritten)
+            {
+                QuickHistory.RecordLatest(store.saveSlotId);
+                Report(ui, Text.Saved(station.dayCounter, store.storeState, DateTime.Now, CustomerQueue.Count(store.storeClientManager)), true);
+            }
+            else
+                Report(ui, Text.Failed(), false);
+        }
+
+        private static string Refusal(PlayerStore store, EmporiumEntry entry)
+        {
+            if (ModHelper.IsOutsideStore())
+                return Text.OutsideStore();
+
+            GameOverUIManager gameOver = GameOverUIManager.Instance;
+            if (gameOver != null && gameOver.uiPanel != null && gameOver.uiPanel.activeSelf)
+                return Text.GameOver();
+
+            ItemMouseDragHandler drag = ItemMouseDragHandler.current;
+            ItemMultiSelectHandler groupDrag = ItemMultiSelectHandler.current;
+            if ((drag != null && drag.IsDraggingItem) || (groupDrag != null && groupDrag.IsGroupDragging))
+                return Text.Dragging();
+
+            // The customer being served is not part of the save (ES3NonSerializable in PlayerStore). IsClientPresent
+            // is the game's own check (currentClientInstance, cleared by DismissCurrentClient); isClientArrived is not
+            // used because the game leaves it true after the customer has gone.
+            if (store.IsClientPresent() || store.isClientBeingArrested || store.isHandlingShootout)
+                return Text.CustomerPresent(SaveUIManager.GetPreview(store.saveSlotId));
+
+            if (HasItems(entry.backInvinvElementCounter) || HasItems(entry.afterhourInventory)
+                || HasItems(entry.responseInventory) || HasItems(entry.responseInventoryClosable)
+                || HasItems(entry.swapBufferElement))
+                return Text.TemporaryNotEmpty();
+
+            List<int> notStorable = CustomerQueue.PositionsNotStorable(store.storeClientManager);
+            if (notStorable.Count > 0)
+                return Text.QueueNotStorable(notStorable, SaveUIManager.GetPreview(store.saveSlotId));
+
+            return null;
+        }
+
+        internal static bool HasItems(GameInventory inventory)
+        {
+            if (inventory == null)
+                return false;
+            List<GameItem> items = inventory.childItems;
+            return items != null && items.Count > 0;
+        }
+
+        // ReputationUIManager.Notify has one text: a second call would replace this message, so the key conflict is
+        // added to it.
+        private static void Report(StoreUIManager ui, string message, bool saved)
+        {
+            if (KeyConflict.WithHighlight(SaveKey.Current))
+                message = Notice.Show(ui, message, Text.HighlightConflict());
+            else
+                ui.Notify(message, "default");
+            UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + (saved ? "saved: " : "not saved: ") + message);
+        }
+    }
+
+    // State that PlayerStore.SaveGame does not write but an F5 save needs: the items on the front counter,
+    // the customers still waiting today, flags of the current day that PlayerStore marks ES3NonSerializable,
+    // and the store state the save was made in. The values go into PlayerStore.modData only for the duration
+    // of an F5 save.
+    internal static class SaveExtras
+    {
+        private const string DayKey = "save.day";
+        private const string StateKey = "save.state";
+        private const string FrontCounterKey = "save.frontCounter";
+        private const string QueueKey = "save.customerQueue";
+        private const string ReportFiledKey = "today.correctReportFile";
+        private const string WantedVisitedKey = "today.wantedVisited";
+        private const string WantedNameKey = "today.wantedName";
+        private const string WantedIdKey = "today.wantedId";
+        private const string CallNextKey = "today.callNextWhenPossible";
+        private static readonly string[] Keys = { DayKey, StateKey, FrontCounterKey, QueueKey, ReportFiledKey, WantedVisitedKey, WantedNameKey, WantedIdKey, CallNextKey };
+
+        // Set after loading an F5 save, read by the patches below.
+        internal static bool SkipMorningReport;
+        internal static bool PendingOpenShutter;
+        internal static bool PendingShowFrontArea;
+        internal static List<CustomerQueue.Entry> PendingQueue;
+
+        internal static void Write(PlayerStore store, EmporiumEntry entry, StoreStation station)
+        {
+            Set(DayKey, station.dayCounter.ToString(CultureInfo.InvariantCulture));
+            Set(StateKey, ((int)store.storeState).ToString(CultureInfo.InvariantCulture));
+            Set(FrontCounterKey, QuickSave.HasItems(entry.frontInvinvElement)
+                ? store.EncodeSaveItem("save_bag", entry.frontInvinvElement, entry.frontInvWindow)
+                : "");
+            Set(QueueKey, CustomerQueue.Encode(store.storeClientManager));
+            Set(ReportFiledKey, store.correctReportFileToday ? "1" : "0");
+            Set(WantedVisitedKey, store.wantedPersonVisitedToday ? "1" : "0");
+            Set(WantedNameKey, store.wantedPersonVisitedName ?? "");
+            Set(WantedIdKey, store.wantedPersonVisitedId ?? "");
+            Set(CallNextKey, store.callNextWhenPossible ? "1" : "0");
+        }
+
+        internal static void Clear()
+        {
+            foreach (string key in Keys)
+                ModHelper.RemoveModData(F5ForceSaveMod.ModId, key);
+        }
+
+        // ModHook.OnGameLoadedLate: PlayerStore and the store inventories have just been read from the slot file.
+        internal static void OnGameLoaded()
+        {
+            SkipMorningReport = false;
+            PendingOpenShutter = false;
+            PendingShowFrontArea = false;
+            PendingQueue = null;
+            try
+            {
+                PlayerStore store = PlayerStore.Instance;
+                StoreStation station = StoreStation.Instance;
+                EmporiumEntry entry = EmporiumEntry.Instance;
+                if (store == null || station == null || entry == null || !ModHelper.HasModData(F5ForceSaveMod.ModId, DayKey))
+                    return;
+
+                int day = ParseInt(Get(DayKey), -1);
+                int state = ParseInt(Get(StateKey), -1);
+                if (day != station.dayCounter || state != (int)store.storeState)
+                {
+                    UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "extra save data for day " + day + " state " + state
+                        + " does not match the loaded day " + station.dayCounter + " state " + (int)store.storeState + "; not applied");
+                    Clear();
+                    return;
+                }
+
+                store.correctReportFileToday = Get(ReportFiledKey) == "1";
+                store.wantedPersonVisitedToday = Get(WantedVisitedKey) == "1";
+                store.wantedPersonVisitedName = Get(WantedNameKey);
+                store.wantedPersonVisitedId = Get(WantedIdKey);
+                store.callNextWhenPossible = Get(CallNextKey) == "1";
+
+                string frontCounter = Get(FrontCounterKey);
+                if (!string.IsNullOrEmpty(frontCounter))
+                {
+                    store.DecodeSaveItem(frontCounter, entry.frontInvinvElement);
+                    PendingShowFrontArea = true;
+                }
+
+                if (store.storeState == PlayerStore.StoreState.OPEN)
+                {
+                    PendingOpenShutter = true;
+                    PendingShowFrontArea = true;
+                }
+                SkipMorningReport = store.storeState != PlayerStore.StoreState.MORNING;
+
+                // Saves made before 1.2.0 have no queue entry; their waiting customers were not stored.
+                string queue = ModHelper.HasModData(F5ForceSaveMod.ModId, QueueKey) ? Get(QueueKey) : null;
+                List<CustomerQueue.Entry> waiting = queue != null ? CustomerQueue.Decode(queue) : null;
+                if (waiting != null && waiting.Count > 0)
+                    PendingQueue = waiting;
+                if (queue == null && store.storeState == PlayerStore.StoreState.OPEN)
+                    UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "this F5 save was made while open by a version before 1.2.0; the customers waiting at that time were not stored");
+
+                UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "restored an F5 save of day " + day + " in state " + store.storeState
+                    + "; front counter items: " + (string.IsNullOrEmpty(frontCounter) ? "none" : entry.frontInvinvElement.childItems.Count.ToString(CultureInfo.InvariantCulture))
+                    + "; waiting customers: " + (waiting != null ? waiting.Count.ToString(CultureInfo.InvariantCulture) : "not stored"));
+                Clear();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "restoring the F5 save data failed: " + e);
+            }
+        }
+
+        private static void Set(string key, string value)
+        {
+            ModHelper.SetModData(F5ForceSaveMod.ModId, key, value);
+        }
+
+        private static string Get(string key)
+        {
+            return ModHelper.GetModData(F5ForceSaveMod.ModId, key, "");
+        }
+
+        private static int ParseInt(string text, int fallback)
+        {
+            int value;
+            return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value) ? value : fallback;
+        }
+    }
+
+    // Every save, F5 or the game's own, first moves the slot file into the history, as the game does. Up to 1.3.0 a
+    // second F5 save on the same day overwrote the slot file instead, which replaced the game's save of that
+    // morning. QuickHistory counts F5 saves and the game's saves apart when the history is trimmed.
+    [HarmonyPatch(typeof(SaveFiles), nameof(SaveFiles.RotateIntoHistory))]
+    internal static class RotateIntoHistoryPatch
+    {
+        private static void Prefix()
+        {
+            QuickHistory.BeginRotation(QuickSave.InProgress);
+        }
+
+        private static Exception Finalizer(Exception __exception)
+        {
+            QuickHistory.EndRotation();
+            return __exception;
+        }
+    }
+
+    [HarmonyPatch(typeof(SaveFiles), "TrimHistory")]
+    internal static class TrimHistoryPatch
+    {
+        private static void Prefix(List<SaveHistoryEntry> history, ref int keepCount)
+        {
+            QuickHistory.Trim(history, ref keepCount);
+        }
+    }
+
+    // 1.6.1: since the game 1.0.0.12 (buildid 26496118) the Discover button of the Load Game screen and the repair of an
+    // unreadable save index register save files missing from the index (SaveFiles.ScanAndRegisterOrphans) and list a
+    // slot's history files found in the save folder (SaveFiles.RestoreHistoryFromDisk), which trims that list with
+    // TrimHistory as RotateIntoHistory does. There, too, F5 saves and the game's saves are kept apart.
+    [HarmonyPatch(typeof(SaveFiles), "RestoreHistoryFromDisk")]
+    internal static class RestoreHistoryFromDiskPatch
+    {
+        private static void Prefix(int slotId)
+        {
+            QuickHistory.BeginRestore(slotId);
+        }
+
+        private static Exception Finalizer(Exception __exception)
+        {
+            QuickHistory.EndRotation();
+            return __exception;
+        }
+    }
+
+    // The Load Game screen: " | F5" or " | Auto" after the day and money of each save, on the slot plates (the newest
+    // save of the slot) and on the rows of the expanded history.
+    [HarmonyPatch(typeof(LoadGameUI), "Bind")]
+    internal static class LoadPlatePatch
+    {
+        private static void Prefix(int index, List<int> ___entries)
+        {
+            QuickHistory.BeginPlate(index, ___entries);
+        }
+
+        private static Exception Finalizer(Exception __exception)
+        {
+            QuickHistory.EndLabels();
+            return __exception;
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadGameUI), "BuildExpanded")]
+    internal static class LoadRowsPatch
+    {
+        private static void Prefix(List<SaveHistoryEntry> history)
+        {
+            QuickHistory.BeginRows(history);
+        }
+
+        private static Exception Finalizer(Exception __exception)
+        {
+            QuickHistory.EndLabels();
+            return __exception;
+        }
+    }
+
+    [HarmonyPatch(typeof(LoadGameUI), "DayAndMoney")]
+    internal static class DayAndMoneyPatch
+    {
+        private static void Postfix(ref string __result)
+        {
+            __result = QuickHistory.Label(__result);
+        }
+    }
+
+    // SaveGame logs and swallows write errors, so success is taken from WriteSlotFile completing.
+    [HarmonyPatch(typeof(PlayerStore), "WriteSlotFile")]
+    internal static class WriteSlotFilePatch
+    {
+        private static void Postfix()
+        {
+            if (QuickSave.InProgress)
+                QuickSave.SlotWritten = true;
+        }
+    }
+
+    // PlayerStore.LoadGame (called from EmporiumEntry.Start) decodes the display case items, and each one goes
+    // through PlayerStore.AddedItemToDisplayCase, which calls ShowDisplayCaseTimingTipOnce. That method opens the
+    // "items added after opening take effect the next day" panel when storeState is OPEN and the tip has not been
+    // shown in this run (displayCaseTimingTipShown, which is saved). The game's own saves are made in the morning;
+    // after loading an F5 save made while open, the panel appeared without the player adding anything. The tip is
+    // skipped while LoadGame runs and displayCaseTimingTipShown is left as it is.
+    [HarmonyPatch(typeof(PlayerStore), nameof(PlayerStore.LoadGame))]
+    internal static class LoadGamePatch
+    {
+        internal static bool Loading;
+
+        private static void Prefix()
+        {
+            Loading = true;
+        }
+
+        private static Exception Finalizer(Exception __exception)
+        {
+            Loading = false;
+            return __exception;
+        }
+    }
+
+    [HarmonyPatch(typeof(PlayerStore), "ShowDisplayCaseTimingTipOnce")]
+    internal static class DisplayCaseTipPatch
+    {
+        private static bool Prefix()
+        {
+            return !LoadGamePatch.Loading;
+        }
+    }
+
+    // EmporiumEntry.Start shows the morning report after loading when the save still holds night logs, and the
+    // report turns a CLOSED store into MORNING. An F5 save made while open or after closing is not a morning.
+    // The skip covers only that call during the load (see EmporiumStartPatch).
+    [HarmonyPatch(typeof(StartOfDayUIManager), nameof(StartOfDayUIManager.ShowMorningReport))]
+    internal static class ShowMorningReportPatch
+    {
+        private static bool Prefix()
+        {
+            if (!SaveExtras.SkipMorningReport)
+                return true;
+            SaveExtras.SkipMorningReport = false;
+            UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "skipped the morning report for an F5 save made during the day");
+            return false;
+        }
+    }
+
+    // EmporiumEntry.Start loads the save (PlayerStore.LoadGame, which raises ModHook.OnGameLoadedLate) and calls
+    // ShowMorningReport only if the save holds night logs. The night logs are cleared when the morning report is
+    // shown, so an F5 save made later that day usually holds none. Up to 1.2.2 the skip then stayed set, and the
+    // next call, the report of the following morning (StartOfDayUIManager.OpenUI after the end of the day), was
+    // skipped; its night logs stayed and appeared a day later together with the next night's. The skip is
+    // dropped when Start ends.
+    [HarmonyPatch(typeof(EmporiumEntry), "Start")]
+    internal static class EmporiumStartPatch
+    {
+        private static Exception Finalizer(Exception __exception)
+        {
+            SaveExtras.SkipMorningReport = false;
+            return __exception;
+        }
+    }
+
+    // On the first shutter update after an F5 save is loaded (the store scene has finished starting), the
+    // waiting customers are put back. After an F5 save made while open is loaded, the shutter starts closed and
+    // the front counter hidden; the door is then opened with the game's own animation and the front area is
+    // shown. The opening logic of the day (customer generation) is not run again.
+    // While the door animation runs, StoreShutterButton.OpenShutter keeps the shutter button locked
+    // (PlayerStore.lockShutterButtonFlag); when it ends, the game unlocks the button and deactivates
+    // blockerMaskObject. That image (BlockerMask in the scene, active from the start and again whenever the
+    // shutter closes) covers the shop window and receives the clicks aimed at the vending machine and the
+    // water vending machine outside. The door opened here goes through the same steps.
+    [HarmonyPatch(typeof(StoreShutterButton), "Update")]
+    internal static class ShutterUpdatePatch
+    {
+        private static void Postfix(StoreShutterButton __instance, bool ___isClosed, float ___duration)
+        {
+            if (!SaveExtras.PendingOpenShutter && !SaveExtras.PendingShowFrontArea && SaveExtras.PendingQueue == null)
+                return;
+            List<CustomerQueue.Entry> queue = SaveExtras.PendingQueue;
+            SaveExtras.PendingQueue = null;
+            if (queue != null)
+                CustomerQueue.Restore(PlayerStore.Instance, queue);
+            try
+            {
+                if (SaveExtras.PendingOpenShutter && ___isClosed)
+                    OpenDoor(__instance, ___duration);
+                if (SaveExtras.PendingShowFrontArea && EmporiumEntry.Instance != null)
+                    EmporiumEntry.Instance.ShowFrontArea();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "restoring the open shop view failed: " + e);
+            }
+            finally
+            {
+                SaveExtras.PendingOpenShutter = false;
+                SaveExtras.PendingShowFrontArea = false;
+            }
+        }
+
+        private static void OpenDoor(StoreShutterButton shutter, float duration)
+        {
+            PlayerStore store = PlayerStore.Instance;
+            if (store != null)
+                store.lockShutterButtonFlag++;
+            shutter.ToggleShutterDoor();
+            shutter.StartCoroutine(MetaHelper.WaitAndDo(duration, () => FinishOpening(shutter)));
+        }
+
+        // The steps of the callback that StoreShutterButton.OpenShutter schedules after the door animation.
+        private static void FinishOpening(StoreShutterButton shutter)
+        {
+            PlayerStore store = PlayerStore.Instance;
+            if (store != null)
+                store.lockShutterButtonFlag--;
+            if (shutter != null && shutter.blockerMaskObject != null)
+                shutter.blockerMaskObject.gameObject.SetActive(false);
+            UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "door animation finished; shutter button unlocked and the shop window cleared for clicks");
+        }
+    }
+
+    // The customers still waiting today (StoreClientManager.clientStack; PlayerStore.GetNextClient takes them
+    // from index 0) are ES3NonSerializable: the game itself saves only before the shop opens, when the list is
+    // empty. An F5 save stores each waiting customer's identifier and the fields that customer generation sets
+    // after a customer is created. After loading, the customers are created again with the game's own
+    // factories and put back in the same order; values a factory rolls, such as budgets, are rolled again.
+    internal static class CustomerQueue
+    {
+        // StoreClientManager.AddAugClient appends this to the identifier of a display-case buyer it turns into
+        // a disguised aug.
+        private const string DisguisedAugSuffix = "_disguised_aug";
+
+        // Customers that StoreClientManager queues but StoreClientListDict cannot create. Their factories take
+        // no argument other than the aug tier.
+        private const string AugMedId = "aug_med";
+        private const string AugMaterialId = "aug_material";
+        private const string FlexiBuyerId = "lower_level_flexi_buyer";
+
+        internal sealed class Entry
+        {
+            internal string Identifier;
+            internal bool IsAug;
+            internal int AugTier;
+            internal string AttractedItemId;
+            internal string AttractedType;
+            internal string SourceModId;
+        }
+
+        internal static int Count(StoreClientManager manager)
+        {
+            return manager != null && manager.clientStack != null ? manager.clientStack.Count : 0;
+        }
+
+        // Places in the queue (1 = next) of customers that cannot be created again after loading.
+        internal static List<int> PositionsNotStorable(StoreClientManager manager)
+        {
+            var positions = new List<int>();
+            if (manager == null || manager.clientStack == null)
+                return positions;
+            for (int i = 0; i < manager.clientStack.Count; i++)
+            {
+                StoreClient client = manager.clientStack[i];
+                if (client != null && !CanCreate(client.identifier))
+                    positions.Add(i + 1);
+            }
+            return positions;
+        }
+
+        private static string FactoryKey(string identifier)
+        {
+            return identifier.EndsWith(DisguisedAugSuffix, StringComparison.Ordinal)
+                ? identifier.Substring(0, identifier.Length - DisguisedAugSuffix.Length)
+                : identifier;
+        }
+
+        private static bool InDictionary(string key)
+        {
+            Dictionary<string, Func<StoreClient>> factories = StoreClientListDict.storeClientDict;
+            return factories != null && factories.ContainsKey(key);
+        }
+
+        private static bool CanCreate(string identifier)
+        {
+            if (string.IsNullOrEmpty(identifier))
+                return false;
+            string key = FactoryKey(identifier);
+            return InDictionary(key) || key == AugMedId || key == AugMaterialId || key == FlexiBuyerId;
+        }
+
+        private static StoreClient Create(Entry entry)
+        {
+            string key = FactoryKey(entry.Identifier);
+            StoreClient client;
+            if (InDictionary(key))
+                client = StoreClientListDict.CreateStoreClient(key);
+            else if (key == AugMedId)
+                client = StoreClientList.CreateAugMed(entry.AugTier);
+            else if (key == AugMaterialId)
+                client = StoreClientList.CreateAugMaterial(entry.AugTier);
+            else if (key == FlexiBuyerId)
+                client = StoreClientList.CreateFlexiBuyer();
+            else
+                return null;
+            if (client == null)
+                return null;
+
+            // Set by StoreClientManager after the factory returns.
+            client.identifier = entry.Identifier;
+            if (!string.IsNullOrEmpty(entry.AttractedItemId))
+                client.attractedItemId = entry.AttractedItemId;
+            if (!string.IsNullOrEmpty(entry.AttractedType))
+                client.attractedType = entry.AttractedType;
+            if (entry.IsAug && !client.isAug)
+                AugHelper.MakeDisguisedAug(client, entry.AugTier);
+            if (string.IsNullOrEmpty(client.sourceModId) && !string.IsNullOrEmpty(entry.SourceModId))
+                client.sourceModId = entry.SourceModId;
+            return client;
+        }
+
+        internal static void Restore(PlayerStore store, List<Entry> entries)
+        {
+            if (store == null || store.storeClientManager == null)
+                return;
+            StoreClientManager manager = store.storeClientManager;
+            if (manager.clientStack == null)
+                manager.clientStack = new List<StoreClient>();
+
+            var created = new List<StoreClient>();
+            var names = new List<string>();
+            int failed = 0;
+            foreach (Entry entry in entries)
+            {
+                StoreClient client = null;
+                try
+                {
+                    client = Create(entry);
+                }
+                catch (Exception e)
+                {
+                    UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "creating the waiting customer '" + entry.Identifier + "' failed: " + e);
+                }
+                if (client == null)
+                {
+                    failed++;
+                    continue;
+                }
+                created.Add(client);
+                names.Add(client.identifier);
+            }
+
+            // Customers already in the list were added after loading; the stored ones were waiting before them.
+            manager.clientStack.InsertRange(0, created);
+            UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "put back " + created.Count + " waiting customer(s)"
+                + (failed > 0 ? ", " + failed + " could not be created" : "") + ": " + string.Join(", ", names.ToArray()));
+        }
+
+        internal static string Encode(StoreClientManager manager)
+        {
+            var parts = new List<string> { "v1" };
+            if (manager != null && manager.clientStack != null)
+            {
+                foreach (StoreClient client in manager.clientStack)
+                {
+                    if (client == null)
+                        continue;
+                    parts.Add(string.Join(";", new[]
+                    {
+                        Escape(client.identifier),
+                        client.isAug ? "1" : "0",
+                        client.augTier.ToString(CultureInfo.InvariantCulture),
+                        Escape(client.attractedItemId),
+                        Escape(client.attractedType),
+                        Escape(client.sourceModId),
+                    }));
+                }
+            }
+            return string.Join("|", parts.ToArray());
+        }
+
+        internal static List<Entry> Decode(string text)
+        {
+            var entries = new List<Entry>();
+            string[] parts = (text ?? "").Split('|');
+            if (parts[0] != "v1")
+            {
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "unknown waiting-customer data '" + parts[0] + "'; not restored");
+                return entries;
+            }
+            for (int i = 1; i < parts.Length; i++)
+            {
+                string[] fields = parts[i].Split(';');
+                if (fields.Length < 6 || fields[0].Length == 0)
+                    continue;
+                int tier;
+                int.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out tier);
+                entries.Add(new Entry
+                {
+                    Identifier = Unescape(fields[0]),
+                    IsAug = fields[1] == "1",
+                    AugTier = tier,
+                    AttractedItemId = Unescape(fields[3]),
+                    AttractedType = Unescape(fields[4]),
+                    SourceModId = Unescape(fields[5]),
+                });
+            }
+            return entries;
+        }
+
+        private static string Escape(string value)
+        {
+            return (value ?? "").Replace("%", "%25").Replace(";", "%3B").Replace("|", "%7C");
+        }
+
+        private static string Unescape(string value)
+        {
+            return value.Replace("%7C", "|").Replace("%3B", ";").Replace("%25", "%");
+        }
+    }
+
+    // Texts shown in the game: Chinese when the game language is Chinese, Russian when it is Russian, English otherwise.
+    internal static class Text
+    {
+        private static string LanguageCode()
+        {
+            UnityEngine.Localization.Locale locale = ModHelper.GetCurrentLocale();
+            return locale != null ? locale.Identifier.Code : null;
+        }
+
+        private static string T(string zh, string en, string ru)
+        {
+            string code = LanguageCode();
+            if (code != null && code.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+                return zh;
+            if (code != null && code.StartsWith("ru", StringComparison.OrdinalIgnoreCase))
+                return ru;
+            return en;
+        }
+
+        private static string Clock(DateTime time)
+        {
+            return time.ToString("HH:mm", CultureInfo.InvariantCulture);
+        }
+
+        private static string Phase(PlayerStore.StoreState state)
+        {
+            switch (state)
+            {
+                case PlayerStore.StoreState.OPEN: return T("营业中", "open", "магазин открыт");
+                case PlayerStore.StoreState.CLOSED: return T("打烊后", "after closing", "после закрытия");
+                default: return T("早上", "morning", "утро");
+            }
+        }
+
+        private static string ReturnPoint(SavePreviewData last)
+        {
+            if (last == null)
+                return "";
+            string clock = Clock(last.lastSaveDateTime);
+            return T("现在退出会回到第" + last.dayCount + "天 " + clock + " 的存档。",
+                " Quitting now returns to the save of day " + last.dayCount + " at " + clock + ".",
+                " Если выйти сейчас, игра вернётся к сохранению дня " + last.dayCount + " (" + clock + ").");
+        }
+
+        internal static string Saved(int day, PlayerStore.StoreState state, DateTime time, int waiting)
+        {
+            string phase = Phase(state);
+            return T("已存档：第" + day + "天" + phase + " " + Clock(time) + (waiting > 0 ? "，排队顾客 " + waiting + " 位" : ""),
+                "Saved: day " + day + ", " + phase + ", " + Clock(time) + (waiting > 0 ? ", " + waiting + " customer(s) waiting" : ""),
+                "Сохранено: день " + day + ", " + phase + ", " + Clock(time) + (waiting > 0 ? ", клиентов в очереди: " + waiting : ""));
+        }
+
+        internal static string QueueNotStorable(List<int> positions, SavePreviewData last)
+        {
+            var numbers = new List<string>();
+            foreach (int position in positions)
+                numbers.Add(position.ToString(CultureInfo.InvariantCulture));
+            bool one = positions.Count == 1;
+            string key = SaveKey.Name();
+            return T("排队的顾客中第 " + string.Join("、", numbers.ToArray()) + " 位无法存进存档，等" + (one ? "这位顾客" : "这几位顾客") + "来过以后再按 " + key + "。",
+                (one ? "Waiting customer no. " : "Waiting customers no. ") + string.Join(", ", numbers.ToArray()) + " can't be stored in the save. Press " + key + " after "
+                    + (one ? "this customer has" : "these customers have") + " visited.",
+                (one ? "Клиента под номером " : "Клиентов под номерами ") + string.Join(", ", numbers.ToArray()) + " в очереди нельзя сохранить. Нажмите " + key + ", когда "
+                    + (one ? "он побывает" : "они побывают") + " у прилавка.")
+                + ReturnPoint(last);
+        }
+
+        internal static string CustomerPresent(SavePreviewData last)
+        {
+            string key = SaveKey.Name();
+            return T("顾客在柜台时不能存档，等顾客离开后再按 " + key + "。",
+                "Can't save while a customer is at the counter. Press " + key + " after they leave.",
+                "Нельзя сохраниться, пока у прилавка клиент. Нажмите " + key + ", когда он уйдёт.") + ReturnPoint(last);
+        }
+
+        internal static string TemporaryNotEmpty()
+        {
+            string key = SaveKey.Name();
+            return T("有物品在不会存档的临时位置，先移回店里再按 " + key + "。",
+                "Items in a temporary area are not saved. Move them back, then press " + key + ".",
+                "Предметы во временной зоне не сохраняются. Верните их в магазин и нажмите " + key + ".");
+        }
+
+        internal static string Dragging()
+        {
+            string key = SaveKey.Name();
+            return T("松开拖动的物品后再按 " + key + "。", "Release the dragged item, then press " + key + ".", "Отпустите перетаскиваемый предмет и нажмите " + key + ".");
+        }
+
+        // The row in the Key Binds section of the game options.
+        internal static string KeyOptionLabel()
+        {
+            return T("立即存档（F5 存档 Mod）", "Save now (F5 Quick Save mod)", "Сохранить сейчас (мод F5 Quick Save)");
+        }
+
+        // The entry in this mod's settings window in the Mods panel.
+        internal static string KeySettingLabel()
+        {
+            return T("存档键", "Save key", "Клавиша сохранения");
+        }
+
+        internal static string KeySettingTooltip()
+        {
+            return T("也可以在游戏选项的“按键绑定”中修改。", "Can also be changed under Key Binds in the game options.", "Можно изменить и в настройках игры, в разделе «Назначение клавиш».");
+        }
+
+        internal static string LoadKeyOptionLabel()
+        {
+            return T("快速读档（F5 存档 Mod）", "Quick load (F5 Quick Save mod)", "Быстрая загрузка (мод F5 Quick Save)");
+        }
+
+        internal static string LoadKeySettingLabel()
+        {
+            return T("读档键", "Load key", "Клавиша загрузки");
+        }
+
+        internal static string F5LoadKeyOptionLabel()
+        {
+            return T("读取 F5 存档（F5 存档 Mod）", "Load F5 save (F5 Quick Save mod)", "Загрузка сохранения F5 (мод F5 Quick Save)");
+        }
+
+        internal static string F5LoadKeySettingLabel()
+        {
+            return T("读 F5 存档键", "F5 save load key", "Клавиша загрузки сохранения F5");
+        }
+
+        internal static string NoF5Save()
+        {
+            return T("这个存档位还没有 F5 存档。", "This slot has no F5 save yet.", "В этом слоте пока нет сохранения F5.");
+        }
+
+        internal static string AlwaysHighlightConflict()
+        {
+            string key = F5LoadKey.Name();
+            return T("“Always Highlight”Mod 也用 " + key + "，可在选项“按键绑定”中更换本 Mod 的键。",
+                "Always Highlight also uses " + key + ". Change this mod's key under Key Binds.",
+                "Always Highlight тоже использует " + key + ". Смените клавишу этого мода в разделе «Назначение клавиш».");
+        }
+
+        // The notification shows one text and keeps it on one line while it has no line break, so a second sentence follows the
+        // first on that line.
+        internal static string SameLine(string first, string second)
+        {
+            bool ended = first.EndsWith("。", StringComparison.Ordinal) || first.EndsWith(".", StringComparison.Ordinal);
+            string other = first + (ended ? " " : ". ") + second;
+            return T(first + (ended ? "" : "。") + second, other, other);
+        }
+
+        internal static string NothingToLoad()
+        {
+            return T("没有可以读取的存档。", "There is no save to load.", "Нет сохранения для загрузки.");
+        }
+
+        internal static string OutsideStore()
+        {
+            return T("在店外不能存档。", "Can't save outside the store.", "Вне магазина сохраняться нельзя.");
+        }
+
+        internal static string GameOver()
+        {
+            return T("游戏已结束，不能存档。", "Can't save after game over.", "Игра окончена, сохраниться нельзя.");
+        }
+
+        internal static string Failed()
+        {
+            return T("存档失败，详见 Player.log。", "Save failed, see Player.log.", "Сохранить не удалось, подробности в Player.log.");
+        }
+
+        internal static string HighlightConflict()
+        {
+            string key = SaveKey.Name();
+            return T("“客户需求高亮”Mod 也用 " + key + "，高亮同时被切换，可在选项“按键绑定”中改键。",
+                "Client Demand Highlight also uses " + key + ", so its highlight toggled too. Change a key under Key Binds.",
+                "Client Demand Highlight тоже использует " + key + ", подсветка переключилась. Смените клавишу в разделе «Назначение клавиш».");
+        }
+
+        // Added after the day and money of a save on the Load Game screen.
+        internal static string SaveKind(bool quick)
+        {
+            if (quick)
+                return " | F5";
+            return T(" | 自动", " | Auto", " | Авто");
+        }
+    }
+}
