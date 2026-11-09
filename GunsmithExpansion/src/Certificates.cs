@@ -295,6 +295,15 @@ namespace GunsmithExpansion
             GunsmithMod.Log("the gunsmiths' guild member comes today");
         }
 
+        // A restored customer already contains its sprite key and does not run its factory again.
+        // Register these when the scene's dictionary is ready, before any snapshot restores that customer.
+        internal static void RegisterPortraits()
+        {
+            PortraitKey(Portrait);
+            foreach (NewCustomers.Kind kind in NewCustomers.Kinds)
+                PortraitKey(kind.Portrait);
+        }
+
         // A portrait of this mod (Textures/Items/<name>.png) put into the game's SpriteDict: its key, or null when the
         // picture is not there. Also the new customers' portraits (NewCustomers).
         internal static string PortraitKey(string portrait)
@@ -575,6 +584,15 @@ namespace GunsmithExpansion
             {
                 GunsmithMod.Warn("certificate tooltip: " + e.Message);
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(SpriteDict), "InitializeDictionary")]
+    internal static class CustomerPortraitRegistrationPatch
+    {
+        private static void Postfix()
+        {
+            Certificates.RegisterPortraits();
         }
     }
 

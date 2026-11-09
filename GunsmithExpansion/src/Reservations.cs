@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
+using Ue = UnityEngine;
 
 namespace GunsmithExpansion
 {
@@ -66,8 +67,16 @@ namespace GunsmithExpansion
             internal bool Strict;
         }
 
+        // Keep the reservation on the order object as well as in ModData. Snapshot saves preserve instance fields;
+        // a ConditionalWeakTable entry alone is lost when they restore a new order object.
+        internal sealed class PickupOrder : GunOrderData
+        {
+            internal Reservation Reservation;
+        }
+
         internal static void Register()
         {
+            ReservationPickupLayout.Enable();
             foreach (string kind in Kinds)
             {
                 string k = kind;
@@ -316,6 +325,7 @@ namespace GunsmithExpansion
         // The customer who comes for a reservation due today: a gun order for the model, in good condition with every fault repaired (Strict).
         internal static StoreClient CreatePickup(string kind)
         {
+            SyncAssignments();
             List<Reservation> list = All();
             Reservation due = null;
             foreach (Reservation r in list)
@@ -328,9 +338,14 @@ namespace GunsmithExpansion
             }
             if (due == null)
                 return Nobody();
+            return CreatePickup(due);
+        }
+
+        private static StoreClient CreatePickup(Reservation due)
+        {
             assigned.Add(due.Id);
             GunDef gun = RepairOrders.Find(due.Gun);
-            var order = new GunOrderData();
+            var order = new PickupOrder { Reservation = due };
             order.tier = gun != null && gun.Tier == "三档" ? 3 : gun != null && gun.Tier == "二档" ? 2 : 1;
             order.mandatoryRequirements.Add(Requirements.Model(due.Gun));
             if (due.Strict)
@@ -343,18 +358,197 @@ namespace GunsmithExpansion
                 gun != null ? Text.Pick(gun.NameZh, gun.NameEn) : due.Gun, Due(due));
             pickups.Remove(order);
             pickups.Add(order, due);
-            StoreClient client = Buyer(kind, order);
+            StoreClient client = Buyer(due.Kind, order);
+            // Identifier-only saves must recreate a pickup, not the ordinary gun buyer used for its appearance.
+            client.identifier = PickupPrefix + due.Kind;
+            client.CanReturn = false;
+            // Like the rent collector, the bell cannot dismiss this customer. The explicit unavailable-item
+            // choice below cancels the reservation; the ordinary gun-order window remains available for trading.
+            client.dismissable = false;
+            client.mainDialogue.SetText(client.displayName, Text.Pick("我来取之前预订的枪。", "I'm here to collect my reserved gun."));
+            client.mainDialogue.priority = 3;
+            Dialogue request = client.mainDialogue.nextDialogue;
+            request.priority = 3; // The game's acceptance dialogue has priority 4 and must be able to replace this choice.
+            Dialogue unavailable = new Dialogue().SetText("PLAYER", Text.Pick("我现在没有你要的东西", "I don't have what you need right now."));
+            unavailable.NextDialogue().SetText(client.displayName, Text.Pick("好吧", "Okay.")).SetEndAction(Leave);
+            request.AddChoice(DirectoryMaster.Item("slip", true), unavailable.plainText,
+                string.Format(Text.Pick("退还 {0} 信用点定金，派系声望降低 {1}。",
+                    "Refund the {0}-credit deposit; faction reputation decreases by {1}."), due.Deposit, ReputationLoss), unavailable,
+                () => { if (IsOpenPickup(client.gunOrderData)) Cancel(client.gunOrderData); },
+                () => IsOpenPickup(client.gunOrderData));
+            if (client.acceptDealDialogue != null)
+                client.acceptDealDialogue.SetText(client.displayName, Text.Pick("这个就是我要的", "That's exactly what I wanted."));
+            client.tryInterceptDismiss = () => BlockDismiss(client);
             GunsmithMod.Log("reservation " + due.Id + " pickup for " + due.Gun + ", due " + Due(due));
             return client;
         }
 
         private static readonly HashSet<int> assigned = new HashSet<int>();
+        private static PlayerStore assignedStore;
+        private static bool recoverPickupsAfterLoad;
         private static readonly ConditionalWeakTable<GunOrderData, GunOrderData> pleased = new ConditionalWeakTable<GunOrderData, GunOrderData>();
+
+        internal static void OnGameLoading()
+        {
+            ReservationPickupLayout.Restore();
+            assigned.Clear();
+            assignedStore = null;
+            recoverPickupsAfterLoad = true;
+        }
+
+        private static HashSet<int> ActivePickups()
+        {
+            var ids = new HashSet<int>();
+            PlayerStore store = PlayerStore.Instance;
+            if (store == null)
+                return ids;
+            StoreClient current = store.currentClientInstance != null ? store.currentClientInstance.GetClientBlueprint() : null;
+            Reservation reservation = current != null ? PickupOf(current.gunOrderData) : null;
+            if (reservation != null)
+                ids.Add(reservation.Id);
+            if (store.storeClientManager != null && store.storeClientManager.clientStack != null)
+            {
+                foreach (StoreClient client in store.storeClientManager.clientStack)
+                {
+                    reservation = client != null ? PickupOf(client.gunOrderData) : null;
+                    if (reservation != null)
+                        ids.Add(reservation.Id);
+                }
+            }
+            return ids;
+        }
+
+        // Exact snapshots restore orders without calling our factories. Seed their IDs before assigning another
+        // customer of the same kind; factory-created objects are still protected before they enter the live queue.
+        private static void SyncAssignments()
+        {
+            if (!ReferenceEquals(assignedStore, PlayerStore.Instance))
+            {
+                assigned.Clear();
+                assignedStore = PlayerStore.Instance;
+            }
+            assigned.UnionWith(ActivePickups());
+        }
+
+        // Old F5 saves may have stored a pickup as ll_gun_buyer/merc_gun_buyer/ul_gun_buyer after the appointment
+        // was consumed. Rebuild only due reservations with no live pickup or due future appointment. The ordinary
+        // buyer cannot be distinguished from a real ordinary buyer and is kept. This runs once after F5 restoration.
+        internal static int RecoverMissingPickupsAfterLoad()
+        {
+            if (!recoverPickupsAfterLoad || PlayerStore.Instance == null || PlayerStore.Instance.storeClientManager == null)
+                return 0;
+            recoverPickupsAfterLoad = false;
+            PlayerStore store = PlayerStore.Instance;
+            if (store.storeState != PlayerStore.StoreState.OPEN)
+                return 0;
+            SyncAssignments();
+            HashSet<int> covered = ActivePickups();
+            var future = new Dictionary<string, int>();
+            if (store.futurStoreClientIdQueue != null && store.futurStoreClientDayQueue != null)
+            {
+                int count = Math.Min(store.futurStoreClientIdQueue.Count, store.futurStoreClientDayQueue.Count);
+                for (int i = 0; i < count; i++)
+                {
+                    string id = store.futurStoreClientIdQueue[i];
+                    if (id == null || !id.StartsWith(PickupPrefix, StringComparison.Ordinal) || store.futurStoreClientDayQueue[i] > 0)
+                        continue;
+                    string kind = id.Substring(PickupPrefix.Length);
+                    int old;
+                    future.TryGetValue(kind, out old);
+                    future[kind] = old + 1;
+                }
+            }
+            int restored = 0;
+            foreach (Reservation reservation in All())
+            {
+                if (reservation.Nights > 0 || covered.Contains(reservation.Id) || Array.IndexOf(Kinds, reservation.Kind) < 0
+                    || RepairOrders.Find(reservation.Gun) == null)
+                    continue;
+                int waiting;
+                if (future.TryGetValue(reservation.Kind, out waiting) && waiting > 0)
+                {
+                    future[reservation.Kind] = waiting - 1;
+                    covered.Add(reservation.Id);
+                    continue;
+                }
+                StoreClient client = CreatePickup(reservation);
+                store.storeClientManager.AddClient(client);
+                if (store.storeClientManager.clientStack.Contains(client))
+                {
+                    covered.Add(reservation.Id);
+                    restored++;
+                    GunsmithMod.Log("restored missing pickup for reservation " + reservation.Id);
+                }
+                else
+                {
+                    assigned.Remove(reservation.Id);
+                    GunsmithMod.Warn("missing pickup could not enter the queue for reservation " + reservation.Id);
+                }
+            }
+            return restored;
+        }
 
         internal static Reservation PickupOf(GunOrderData order)
         {
+            PickupOrder pickup = order as PickupOrder;
+            if (pickup != null)
+                return pickup.Reservation;
             Reservation r;
             return order != null && pickups.TryGetValue(order, out r) ? r : null;
+        }
+
+        private static bool IsOpenPickup(GunOrderData order)
+        {
+            Reservation reservation = PickupOf(order);
+            return reservation != null && All().Exists(r => r.Id == reservation.Id);
+        }
+
+        // The public player-dismiss path consumes this callback before invoking it. Re-arm it without changing
+        // the conversation, negotiation window, money or order, including when another mod calls that path directly.
+        internal static bool BlockDismiss(StoreClient client)
+        {
+            if (client == null || !IsOpenPickup(client.gunOrderData))
+                return false;
+            client.tryInterceptDismiss = () => BlockDismiss(client);
+            return true;
+        }
+
+        internal static bool Cancel(GunOrderData order)
+        {
+            Reservation reservation = PickupOf(order);
+            if (reservation == null)
+                return false;
+            List<Reservation> list = All();
+            Reservation current = list.Find(r => r.Id == reservation.Id);
+            if (current == null)
+                return false;
+            list.Remove(current);
+            Save(list);
+            // Selecting the cancellation and the offer button can happen before the departure dialogue finishes.
+            // Close this customer's trade immediately, while keeping any gun placed by the player owned by them.
+            StoreClient client = PlayerStore.Instance != null && PlayerStore.Instance.currentClientInstance != null
+                ? PlayerStore.Instance.currentClientInstance.GetClientBlueprint() : null;
+            if (client != null && client.gunOrderData == order)
+            {
+                if (!client.isBusinessComplete)
+                    client.CompleteBusiness();
+                if (NegociationUIManager.Instance != null)
+                    NegociationUIManager.Instance.CloseUI();
+            }
+            SettleFailure(current, "cancelled");
+            return true;
+        }
+
+        private static void SettleFailure(Reservation reservation, string reason)
+        {
+            assigned.Remove(reservation.Id);
+            if (PlayerStore.Instance != null)
+                PlayerStore.Instance.ModCash(-reservation.Deposit, true);
+            StoreReputation rep = !string.IsNullOrEmpty(reservation.Faction) ? StoreReputation.GetStoreReputation(reservation.Faction) : null;
+            if (rep != null)
+                StoreReputation.ModReputation(reservation.Faction, -ReputationLoss, true);
+            GunsmithMod.Log("reservation " + reservation.Id + " for " + reservation.Gun + " " + reason + ": deposit " + reservation.Deposit
+                + " returned, " + reservation.Faction + " reputation -" + ReputationLoss);
         }
 
         internal static void OnOrderAccepted(GunOrderData order)
@@ -366,6 +560,8 @@ namespace GunsmithExpansion
                 list.RemoveAll(x => x.Id == r.Id);
                 Save(list);
                 assigned.Remove(r.Id);
+                if (DialogUIManager.Instance != null)
+                    DialogUIManager.Instance.HideChoiceBubble();
                 GunsmithMod.Log("reservation " + r.Id + " delivered");
                 return;
             }
@@ -399,7 +595,7 @@ namespace GunsmithExpansion
         // Each night (StorePhoneClient.OnEndDay): a reservation whose day has passed without the gun is called off.
         internal static void OnNight()
         {
-            List<Reservation> list = All(), keep = new List<Reservation>();
+            List<Reservation> list = All(), keep = new List<Reservation>(), expired = new List<Reservation>();
             foreach (Reservation r in list)
             {
                 if (r.Nights > 0)
@@ -408,15 +604,11 @@ namespace GunsmithExpansion
                     keep.Add(r);
                     continue;
                 }
-                assigned.Remove(r.Id);
-                if (PlayerStore.Instance != null)
-                    PlayerStore.Instance.ModCash(-r.Deposit, true);
-                StoreReputation rep = !string.IsNullOrEmpty(r.Faction) ? StoreReputation.GetStoreReputation(r.Faction) : null;
-                if (rep != null)
-                    StoreReputation.ModReputation(r.Faction, -ReputationLoss, true);
-                GunsmithMod.Log("reservation " + r.Id + " for " + r.Gun + " not delivered: deposit " + r.Deposit + " returned, " + r.Faction + " reputation -" + ReputationLoss);
+                expired.Add(r);
             }
             Save(keep);
+            foreach (Reservation reservation in expired)
+                SettleFailure(reservation, "not delivered");
         }
 
         internal static StoreClient CreateRepairReturn(string kind)
@@ -436,6 +628,259 @@ namespace GunsmithExpansion
             client.mainDialogue.SetText(client.displayName, "...").SetEndAction(Leave);
             client.CompleteClientCreation(false);
             return client;
+        }
+    }
+
+    // Only the active pickup request shares the screen with the negotiation tablet. Keep its existing dialogue
+    // and button widgets, moving them by measured screen bounds; restore them before another page/customer uses them.
+    internal static class ReservationPickupLayout
+    {
+        private sealed class Original
+        {
+            internal Ue.RectTransform Rect;
+            internal Ue.Vector3 Position;
+            internal Ue.Vector2 Size;
+            internal float Height;
+            internal TMPro.TMP_Text Label;
+            internal string Text;
+            internal string Wrapped;
+            internal float WrapWidth = -1f;
+            internal float FontSize;
+            internal TMPro.TMP_FontAsset Font;
+            internal float ExtraHeight;
+        }
+        private static readonly List<Original> originals = new List<Original>();
+        private static DialogUIManager owner;
+        private static Dialogue page;
+        private static bool enabled = true;
+        private static float bubbleScale;
+
+        internal static void Enable() { enabled = true; }
+        internal static void Disable() { enabled = false; Restore(); }
+
+        private static Ue.Camera Camera(Ue.RectTransform rect)
+        {
+            Ue.Canvas canvas = rect.GetComponentInParent<Ue.Canvas>();
+            if (canvas != null) canvas = canvas.rootCanvas;
+            return canvas == null || canvas.renderMode == Ue.RenderMode.ScreenSpaceOverlay ? null
+                : canvas.worldCamera != null ? canvas.worldCamera : Ue.Camera.main;
+        }
+
+        internal static Ue.Rect ScreenBounds(Ue.RectTransform rect)
+        {
+            var corners = new Ue.Vector3[4];
+            rect.GetWorldCorners(corners);
+            Ue.Camera camera = Camera(rect);
+            Ue.Vector2 low = Ue.RectTransformUtility.WorldToScreenPoint(camera, corners[0]), high = low;
+            foreach (Ue.Vector3 corner in corners)
+            {
+                Ue.Vector2 point = Ue.RectTransformUtility.WorldToScreenPoint(camera, corner);
+                low = Ue.Vector2.Min(low, point); high = Ue.Vector2.Max(high, point);
+            }
+            return Ue.Rect.MinMaxRect(low.x, low.y, high.x, high.y);
+        }
+
+        private static Original Remember(Ue.RectTransform rect, TMPro.TMP_Text label)
+        {
+            if (rect == null) return null;
+            Original found = originals.Find(value => value.Rect == rect);
+            if (found != null) return found;
+            var saved = new Original { Rect = rect, Position = rect.localPosition, Size = rect.sizeDelta,
+                Height = rect.rect.height, Label = label, Text = label != null ? label.text : null };
+            originals.Add(saved); return saved;
+        }
+
+        private static void RestoreGeometry(Original saved, bool restoreText = true)
+        {
+            if (saved.Rect == null) return;
+            saved.Rect.localPosition = saved.Position; saved.Rect.sizeDelta = saved.Size;
+            if (restoreText && saved.Label != null && saved.Wrapped != null && saved.Label.text == saved.Wrapped)
+                saved.Label.text = saved.Text;
+            UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(saved.Rect);
+        }
+
+        internal static void Restore()
+        {
+            foreach (Original saved in originals) RestoreGeometry(saved);
+            originals.Clear(); owner = null; page = null;
+        }
+
+        private static string Wrap(TMPro.TMP_Text label, string text, float width)
+        {
+            if (string.IsNullOrEmpty(text) || label.GetPreferredValues(text, float.PositiveInfinity, float.PositiveInfinity).x <= width) return text;
+            var lines = new List<string>();
+            foreach (string paragraph in text.Split('\n'))
+            {
+                string line = "";
+                foreach (char character in paragraph)
+                {
+                    string next = line + character;
+                    if (line.Length > 0 && label.GetPreferredValues(next, float.PositiveInfinity, float.PositiveInfinity).x > width)
+                    {
+                        int space = next.LastIndexOf(' ');
+                        if (space > 0) { lines.Add(next.Substring(0, space).TrimEnd()); line = next.Substring(space + 1); }
+                        else { lines.Add(line); line = character.ToString(); }
+                    }
+                    else line = next;
+                }
+                lines.Add(line);
+            }
+            return string.Join("\n", lines.ToArray());
+        }
+
+        private static void FitText(Original saved, float screenWidth)
+        {
+            if (saved == null || saved.Label == null || saved.Rect == null || string.IsNullOrEmpty(saved.Text)) return;
+            Ue.RectTransform textRect = saved.Label.rectTransform;
+            Ue.Rect textBounds = ScreenBounds(textRect), bubble = ScreenBounds(saved.Rect);
+            float pixelsPerUnit = textRect.rect.width > 0f ? textBounds.width / textRect.rect.width : 1f;
+            if (pixelsPerUnit <= 0f) return;
+            float padding = Ue.Mathf.Max(0f, bubble.width - textBounds.width);
+            float limit = Ue.Mathf.Max(20f, (screenWidth - padding) / pixelsPerUnit);
+            if (saved.Wrapped == null || Ue.Mathf.Abs(saved.WrapWidth - limit) > 0.1f
+                || !Ue.Mathf.Approximately(saved.FontSize, saved.Label.fontSize) || saved.Font != saved.Label.font)
+            {
+                saved.Wrapped = Wrap(saved.Label, saved.Text, limit);
+                saved.ExtraHeight = Ue.Mathf.Max(0f, saved.Label.GetPreferredValues(saved.Wrapped, float.PositiveInfinity, float.PositiveInfinity).y
+                    - saved.Label.GetPreferredValues(saved.Text, float.PositiveInfinity, float.PositiveInfinity).y);
+                saved.WrapWidth = limit; saved.FontSize = saved.Label.fontSize; saved.Font = saved.Label.font;
+            }
+            saved.Label.text = saved.Wrapped;
+            float textScale = textRect.rect.height > 0f ? textBounds.height / textRect.rect.height : pixelsPerUnit;
+            float rootScale = saved.Rect.rect.height > 0f ? bubble.height / saved.Rect.rect.height : pixelsPerUnit;
+            if (rootScale > 0f) saved.Rect.SetSizeWithCurrentAnchors(Ue.RectTransform.Axis.Vertical, saved.Height + saved.ExtraHeight * textScale / rootScale);
+            UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(saved.Rect);
+        }
+
+        private static void Place(List<Ue.RectTransform> roots, Ue.Rect area)
+        {
+            roots.RemoveAll(rect => rect == null || !rect.gameObject.activeInHierarchy);
+            if (roots.Count == 0) return;
+            Ue.Rect bounds = ScreenBounds(roots[0]);
+            foreach (Ue.RectTransform rect in roots)
+            {
+                Ue.Rect other = ScreenBounds(rect);
+                bounds = Ue.Rect.MinMaxRect(Ue.Mathf.Min(bounds.xMin, other.xMin), Ue.Mathf.Min(bounds.yMin, other.yMin),
+                    Ue.Mathf.Max(bounds.xMax, other.xMax), Ue.Mathf.Max(bounds.yMax, other.yMax));
+            }
+            Ue.Vector2 shift = new Ue.Vector2(Ue.Mathf.Clamp(bounds.xMin, area.xMin, Ue.Mathf.Max(area.xMin, area.xMax - bounds.width)) - bounds.xMin,
+                Ue.Mathf.Clamp(bounds.yMin, area.yMin, Ue.Mathf.Max(area.yMin, area.yMax - bounds.height)) - bounds.yMin);
+            foreach (Ue.RectTransform rect in roots)
+            {
+                if (roots.Exists(other => other != rect && rect.IsChildOf(other))) continue;
+                Ue.RectTransform parent = rect.parent as Ue.RectTransform;
+                if (parent == null) continue;
+                Ue.Vector2 start, finish;
+                Ue.Vector2 center = ScreenBounds(rect).center;
+                if (Ue.RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, center, Camera(parent), out start)
+                    && Ue.RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, center + shift, Camera(parent), out finish))
+                    rect.localPosition += new Ue.Vector3(finish.x - start.x, finish.y - start.y, 0f);
+            }
+        }
+
+        internal static void Refresh()
+        {
+            if (!enabled) return;
+            DialogUIManager ui = DialogUIManager.Instance;
+            NegociationUIManager trade = NegociationUIManager.Instance;
+            StoreClient client = PlayerStore.Instance != null && PlayerStore.Instance.currentClientInstance != null
+                ? PlayerStore.Instance.currentClientInstance.GetClientBlueprint() : null;
+            Dialogue request = client != null && client.mainDialogue != null ? client.mainDialogue.nextDialogue : null;
+            if (ui == null || trade == null || !trade.IsOpen || trade.uiObject == null || client == null || client.isBusinessComplete
+                || Reservations.PickupOf(client.gunOrderData) == null || ui.currentDialog != request || request == null
+                || request.choices.Count != 1 || ui.IsLineStillDisplaying(request))
+            { Restore(); return; }
+            float currentScale = EmporiumOption.DialogBubbleScale;
+            if (owner != ui || page != request || !Ue.Mathf.Approximately(bubbleScale, currentScale))
+            {
+                Restore();
+                ui.ApplyBubbleScale();
+                owner = ui; page = request; bubbleScale = currentScale;
+            }
+            Ue.RectTransform panel = trade.uiObject.transform as Ue.RectTransform;
+            if (panel == null) { Restore(); return; }
+            Original body = Remember(ui.clientBubble != null ? ui.clientBubble.transform as Ue.RectTransform : null,
+                ui.clientBubble != null ? ui.clientBubble.textfield : null);
+            Original name = Remember(ui.clientNameBubble != null ? ui.clientNameBubble.transform as Ue.RectTransform : null, null);
+            Original choice = ui.dialogChoiceBubbles != null && ui.dialogChoiceBubbles.Count > 0 && ui.dialogChoiceBubbles[0].gameObject.activeInHierarchy
+                ? Remember(ui.dialogChoiceBubbles[0].transform as Ue.RectTransform, ui.dialogChoiceBubbles[0].TMP) : null;
+            foreach (Original saved in originals) RestoreGeometry(saved, false);
+            Ue.Rect safe = Ue.Screen.safeArea;
+            if (safe.width <= 0f || safe.height <= 0f) safe = new Ue.Rect(0f, 0f, Ue.Screen.width, Ue.Screen.height);
+            Ue.Rect tablet = ScreenBounds(panel);
+            float gap = Ue.Mathf.Max(4f, Ue.Mathf.Min(safe.width, safe.height) * 0.01f);
+            Ue.Rect area = Ue.Rect.MinMaxRect(safe.xMin + gap, safe.yMin + gap, Ue.Mathf.Max(safe.xMin + gap, tablet.xMin - gap), safe.yMax - gap);
+            // A player can drag the tablet to the far left. Use its right side when the left side has no usable space.
+            if (area.width < safe.width * 0.15f && safe.xMax - tablet.xMax - 2f * gap > area.width)
+                area = Ue.Rect.MinMaxRect(tablet.xMax + gap, safe.yMin + gap, safe.xMax - gap, safe.yMax - gap);
+            FitText(body, area.width); FitText(choice, area.width);
+            Place(new List<Ue.RectTransform> { body != null ? body.Rect : null, name != null ? name.Rect : null }, area);
+            Place(new List<Ue.RectTransform> { choice != null ? choice.Rect : null }, area);
+        }
+    }
+
+    [HarmonyPatch(typeof(NegociationUIManager), "LateUpdate")]
+    internal static class ReservationPickupLayoutPatch
+    {
+        private static void Postfix() { ReservationPickupLayout.Refresh(); }
+    }
+
+    [HarmonyPatch(typeof(NegociationUIManager), nameof(NegociationUIManager.CloseUI))]
+    internal static class ReservationPickupLayoutClosedPatch
+    {
+        private static void Postfix() { ReservationPickupLayout.Restore(); }
+    }
+
+    [HarmonyPatch(typeof(DialogUIManager), nameof(DialogUIManager.EndConversation))]
+    internal static class ReservationPickupLayoutEndedPatch
+    {
+        private static void Postfix() { ReservationPickupLayout.Restore(); }
+    }
+
+    // Run before load hooks and before either F5 mod restores waiting customers from their saved identifiers.
+    [HarmonyPatch(typeof(PlayerStore), nameof(PlayerStore.LoadGame))]
+    internal static class ReservationLoadPatch
+    {
+        private static void Prefix()
+        {
+            Reservations.OnGameLoading();
+        }
+    }
+
+    // Both F5 variants restore their waiting queue (and the exact snapshot's current customer) in this update.
+    [HarmonyPatch(typeof(StoreShutterButton), "Update")]
+    [HarmonyAfter("mod.F5ForceSave", "mod.F5SnapshotSave")]
+    internal static class ReservationRestoreQueuePatch
+    {
+        private static void Postfix()
+        {
+            Reservations.RecoverMissingPickupsAfterLoad();
+        }
+    }
+
+    [HarmonyPatch(typeof(StoreClientListGun), "TryStayForMeleeWeapon")]
+    internal static class ReservationDismissPatch
+    {
+        private static bool Prefix(StoreClient storeClient, ref bool __result)
+        {
+            if (storeClient == null || Reservations.PickupOf(storeClient.gunOrderData) == null)
+                return true;
+            __result = Reservations.BlockDismiss(storeClient);
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(StoreClientListGun), nameof(StoreClientListGun.CreateDeliveryFollowUp))]
+    internal static class ReservationFollowUpPatch
+    {
+        private static bool Prefix(StoreClient storeClient, ref Dialogue __result)
+        {
+            if (storeClient == null || Reservations.PickupOf(storeClient.gunOrderData) == null)
+                return true;
+            if (NegociationUIManager.Instance != null)
+                NegociationUIManager.Instance.CloseUI();
+            __result = null;
+            return false;
         }
     }
 

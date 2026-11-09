@@ -1,5 +1,5 @@
 [assembly: System.Reflection.AssemblyTitle("GunsmithExpansion")]
-[assembly: System.Reflection.AssemblyVersion("0.7.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.7.3.0")]
 
 namespace GunsmithExpansion
 {
@@ -9,7 +9,7 @@ namespace GunsmithExpansion
     {
         internal const string ModId = "GunsmithExpansion";
         internal const string LogPrefix = "[GunsmithExpansion] ";
-        internal static string Version = "0.7.1";
+        internal static string Version = "0.7.3";
 
         public void Init(ModManifest manifest)
         {
@@ -51,6 +51,7 @@ namespace GunsmithExpansion
         // (ModLoader.StopRunningMod); after its Steam guard trips the game stops the mod without calling this.
         public void OnDisable()
         {
+            ReservationPickupLayout.Disable();
             ModHook.OnModItemDirectoryInit -= Items.OnItemDirectoryInit;
             ModHook.OnGameLoadedLate -= SaveRecord.OnGameLoaded;
             ModHook.OnGameLoadedLate -= Phone.OnGameLoaded;

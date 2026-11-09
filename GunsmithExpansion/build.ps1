@@ -22,6 +22,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $modName = 'GunsmithExpansion'
+$assemblyName = 'VVittgenstein.GunsmithExpansion'
 
 $managed = Join-Path $GameDir 'Probably Stolen_Data\Managed'
 if (-not (Test-Path -LiteralPath (Join-Path $managed 'Assembly-CSharp.dll'))) {
@@ -38,7 +39,10 @@ if (-not (Test-Path -LiteralPath $csc)) { throw "csc.dll not found at '$csc'." }
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("$modName-build-" + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
-    $dll = Join-Path $staging "$modName.dll"
+    # Mono unifies weak-named assemblies by their embedded name. Other Workshop
+    # mods also ship GunsmithExpansion.dll; retain the package filename while
+    # compiling a unique assembly identity.
+    $dll = Join-Path $staging "$assemblyName.dll"
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($opt in '-nologo', '-nostdlib+', '-target:library', '-langversion:7.3',
                      '-optimize+', '-deterministic+', '-debug-') { $lines.Add($opt) }

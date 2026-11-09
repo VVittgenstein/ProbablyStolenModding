@@ -31,6 +31,7 @@ namespace GunsmithExpansion
     {
         internal const string ParcelId = "gse_parcel_chip";
         internal const string CartonId = "gse_box_gun";
+        internal const string PackTag = "GSE_PHONE_PACK_ID";
         private const int ParcelWidth = 6;
         private const int ParcelHeight = 4;
         internal const int CartonWidth = 17;
@@ -91,6 +92,7 @@ namespace GunsmithExpansion
             // Only with the delay: on loading its contents may not be back yet when this runs.
             box.onLoaded = (Action<GameItem>)Delegate.Combine(box.onLoaded, new Action<GameItem>(b =>
             {
+                RestorePackLabel(b);
                 if (DialogUIManager.Instance != null && DialogUIManager.Instance.isActiveAndEnabled)
                     CheckLater(b, inside);
             }));
@@ -132,6 +134,50 @@ namespace GunsmithExpansion
         private static string BoxFor(string id)
         {
             return id.StartsWith("printer_chip", StringComparison.Ordinal) || id.StartsWith("gse_chip_", StringComparison.Ordinal) ? ParcelId : CartonId;
+        }
+
+        // Fill the entire paid material pack before exposing its carton in the store. Failure leaves the saved order
+        // intact; no partial carton is handed over and another order cannot share the carton.
+        internal static bool HandPack(Phone.Pack pack, ref string elsewhere)
+        {
+            if (pack == null || !Registered(CartonId))
+                return false;
+            GameItem box = DirectoryMaster.Item(CartonId, true);
+            if (box == null)
+                return false;
+            foreach (string id in pack.Items)
+            {
+                GameItem item = Phone.CreateOrderedItem(id);
+                if (item != null && Put(box, item))
+                    continue;
+                if (item != null)
+                    item.Destroy();
+                box.Destroy();
+                GunsmithMod.Warn("material pack could not be filled: " + pack.Id + ", item " + id);
+                return false;
+            }
+            box.EnableTag(PackTag, false);
+            box.ModifyTag(PackTag, tag => tag.SetString(pack.Id), false);
+            RestorePackLabel(box);
+            if (Place(box, ref elsewhere))
+                return true;
+            box.Destroy();
+            return false;
+        }
+
+        internal static void RestorePackLabel(GameItem box)
+        {
+            if (box == null || !box.IsTag(PackTag))
+                return;
+            Phone.Pack pack = Phone.FindPack(box.GetTagReadonly(PackTag).GetString());
+            if (pack == null)
+                return;
+            box.name = Phone.PackTitle(pack);
+            box.shortDescription = Phone.PackName(pack) + "\n" + Text.Pick(
+                "退休枪匠送来的货。打开后把东西取走，取空后包装会消失，不能往里放东西。",
+                "Goods from the retired gunsmith. Open it and take them out; it is gone once empty, and nothing can be put in.");
+            if (box.contentWindow != null)
+                box.contentWindow.SetTitle(box.name);
         }
 
         // One ordered item into its box. open keeps the boxes of this delivery. false: no room in the store, the order stays.

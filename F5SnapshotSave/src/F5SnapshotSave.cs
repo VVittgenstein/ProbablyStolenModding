@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.5.2.0")]
+[assembly: System.Reflection.AssemblyVersion("0.5.4.0")]
 
 namespace F5SnapshotSave
 {
@@ -276,7 +276,17 @@ namespace F5SnapshotSave
             }
 
             string error;
-            Snapshot.Captured cap = Snapshot.Capture(store, entry, withCounter, dialogState, out error);
+            Snapshot.Captured cap;
+            try
+            {
+                cap = Snapshot.Capture(store, entry, withCounter, dialogState, out error);
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "Snapshot.Capture threw: " + e);
+                Report(ui, Text.Failed(), false);
+                return;
+            }
             if (cap == null)
             {
                 UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "snapshot not possible: " + error);

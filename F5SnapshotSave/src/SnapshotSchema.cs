@@ -122,7 +122,8 @@ namespace F5SnapshotSave
             Type type = value.GetType();
             string assembly = type.Assembly.GetName().Name;
             // GunDef is immutable configuration owned by the catalog. Do not generalize this to mutable static arrays.
-            if (assembly != "GunsmithExpansion" || type.FullName != "GunsmithExpansion.GunDef") return false;
+            if ((assembly != "GunsmithExpansion" && assembly != "VVittgenstein.GunsmithExpansion")
+                || type.FullName != "GunsmithExpansion.GunDef") return false;
             if (!Data.Modules.ContainsKey(assembly)) return false;
             List<SnapshotField> candidates;
             if (!arrayFields.TryGetValue(type, out candidates))
@@ -135,7 +136,7 @@ namespace F5SnapshotSave
                     foreach (FieldRow field in row.Value)
                     {
                         if (!field.Static || field.FieldType != wanted) continue;
-                        Type owner = ModReflect.FindType(row.Key.Substring(prefix.Length));
+                        Type owner = ResolveType(type.Assembly, row.Key.Substring(prefix.Length));
                         if (owner != null) candidates.Add(Field(owner, field.Name));
                     }
                 }
@@ -155,6 +156,16 @@ namespace F5SnapshotSave
         {
             Type result;
             if (!KnownTypes.TryGetValue(name, out result)) result = ModReflect.FindType(name);
+            // A different Workshop mod may use the same namespace and type name.
+            // Resolve this integration through its manifest ID and verify the
+            // recorded assembly, while keeping the game's scoped API.
+            if ((result == null || result.Assembly != expectedAssembly)
+                && expectedAssembly.GetName().Name == "VVittgenstein.GunsmithExpansion")
+            {
+                foreach (Type candidate in ModReflect.Types("GunsmithExpansion"))
+                    if (candidate.Assembly == expectedAssembly && candidate.FullName == name)
+                    { result = candidate; break; }
+            }
             if (result == null || result.Assembly != expectedAssembly)
                 throw new NotSupportedException("snapshot type is not in its recorded assembly: " + name);
             return result;

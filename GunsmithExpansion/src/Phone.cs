@@ -27,9 +27,8 @@ namespace GunsmithExpansion
     // also has four packs, which are not counted in the 3 a week. Gun parts x6 (185) and the repair pack (265: metal screws 2, wires 2,
     // scrap metal 4, gun parts 2, rubbing alcohol 2) from the start, metal ingots x6 (355) with weapon permit II, high purity metal ingots x8
     // (600) with permit III. The prices are those of the normal difficulty; Agent's decision: on the others they take the game's retired
-    // supplier markup as the retired gunsmith's other goods do, price x (100 + markup) / 115 rounded. A pack is ordered as the items in it,
-    // each brought like any other order (one that finds no room waits with the courier); an ingot ordered as high purity gets that purity
-    // when it is made (id@purity in the saved orders).
+    // supplier markup as the retired gunsmith's other goods do, price x (100 + markup) / 115 rounded. A pack remains one saved order
+    // and is filled in its own labelled carton before that carton is handed over. An order without room stays with the courier.
     internal static class Phone
     {
         internal const long Number = 4867;
@@ -134,6 +133,18 @@ namespace GunsmithExpansion
                 parts.Add(ItemName(c.Key) + " ×" + c.Value.ToString(CultureInfo.InvariantCulture));
             string list = string.Join(Text.Pick("、", ", "), parts.ToArray());
             return counts.Count > 1 ? string.Format(Text.Pick("修枪材料包（{0}）", "Gun repair pack ({0})"), list) : list;
+        }
+
+        internal static string PackTitle(Pack pack)
+        {
+            switch (pack.Id)
+            {
+                case "gse_phone_gun_parts": return Text.Pick("枪械零件包", "Gun parts pack");
+                case "gse_phone_repair_pack": return Text.Pick("修枪材料包", "Gun repair pack");
+                case "gse_phone_ingots": return Text.Pick("金属锭包", "Metal ingot pack");
+                case "gse_phone_high_ingots": return Text.Pick("高纯度金属锭包", "High-purity metal ingot pack");
+                default: return pack.Id;
+            }
         }
 
         private static string ItemName(string orderId)
@@ -345,7 +356,47 @@ namespace GunsmithExpansion
                 if (parts.Length == 2 && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out nights))
                     list.Add(new Order { Id = parts[0], Nights = nights });
             }
-            return list;
+            return RestoreLegacyPacks(list);
+        }
+
+        // Before T-020 a material pack was saved as consecutive item entries. Recover only a complete, exact pack
+        // sequence with the same remaining nights. Unmatched entries stay as individual legacy items; grouping never
+        // changes their quantities or price, although the old format cannot identify original partially delivered packs.
+        private static List<Order> RestoreLegacyPacks(List<Order> orders)
+        {
+            var result = new List<Order>();
+            for (int i = 0; i < orders.Count;)
+            {
+                Pack match = null;
+                foreach (Pack pack in MaterialPacks)
+                {
+                    if (i + pack.Items.Length > orders.Count)
+                        continue;
+                    bool same = true;
+                    for (int p = 0; p < pack.Items.Length; p++)
+                        if (orders[i + p].Id != pack.Items[p] || orders[i + p].Nights != orders[i].Nights)
+                        {
+                            same = false;
+                            break;
+                        }
+                    if (same && (match == null || pack.Items.Length > match.Items.Length))
+                        match = pack;
+                }
+                if (match == null)
+                    result.Add(orders[i++]);
+                else
+                {
+                    result.Add(new Order { Id = match.Id, Nights = orders[i].Nights });
+                    i += match.Items.Length;
+                }
+            }
+            return result;
+        }
+
+        internal static int OrderItemCount(Order order)
+        {
+            Pack pack = FindPack(order.Id);
+            return pack != null ? pack.Items.Length : 1;
         }
 
         private static void SaveOrders(List<Order> orders)
@@ -382,8 +433,7 @@ namespace GunsmithExpansion
             List<Order> orders = Orders();
             if (pack != null)
             {
-                foreach (string item in pack.Items)
-                    orders.Add(new Order { Id = item, Nights = DeliveryDays });
+                orders.Add(new Order { Id = pack.Id, Nights = DeliveryDays });
                 SaveOrders(orders);
                 GunsmithMod.Log("phone order " + id + " for " + price + ", " + pack.Items.Length + " items, not counted in the week's " + WeeklyLimit);
                 return true;
@@ -437,13 +487,25 @@ namespace GunsmithExpansion
                     left.Add(o);
                     continue;
                 }
-                string itemId, purity;
-                SplitOrderId(o.Id, out itemId, out purity);
-                GameItem item = DirectoryMaster.Item(itemId, true);
-                if (item == null)
+                Pack pack = FindPack(o.Id);
+                if (pack != null)
+                {
+                    if (DeliveryBoxes.HandPack(pack, ref elsewhere))
+                        handed += pack.Items.Length;
+                    else
+                    {
+                        left.Add(o);
+                        noRoom++;
+                    }
                     continue;
-                if (purity != null)
-                    IngotPurityHelper.SetPurity(item, purity);
+                }
+                GameItem item = CreateOrderedItem(o.Id);
+                if (item == null)
+                {
+                    left.Add(o);
+                    noRoom++;
+                    continue;
+                }
                 if (DeliveryBoxes.Hand(item, boxes, ref elsewhere))
                 {
                     handed++;
@@ -457,6 +519,16 @@ namespace GunsmithExpansion
             SaveOrders(left);
             GunsmithMod.Log("retired gunsmith delivered " + handed + " ordered items, " + noRoom + " without room, " + (left.Count - noRoom) + " still on order");
             return noRoom;
+        }
+
+        internal static GameItem CreateOrderedItem(string orderId)
+        {
+            string itemId, purity;
+            SplitOrderId(orderId, out itemId, out purity);
+            GameItem item = DirectoryMaster.Item(itemId, true);
+            if (item != null && purity != null)
+                IngotPurityHelper.SetPurity(item, purity);
+            return item;
         }
 
         // On his line appearing, so that what he says fits what happened. Without room he asks for some and stays; the choice
@@ -661,11 +733,12 @@ namespace GunsmithExpansion
         {
             menuPages.Add(page);
             string name = Name();
+            int perPage = Math.Max(1, EnsureChoiceBubbles() - 2);
             if (menu.Children.Count > 0)
             {
-                foreach (Menu child in menu.Children)
+                for (int i = start; i < menu.Children.Count && i < start + perPage; i++)
                 {
-                    Menu c = child;
+                    Menu c = menu.Children[i];
                     Dialogue open = new Dialogue().SetText("PLAYER", c.Label + Text.Pick("。", "."));
                     page.AddChoice(DirectoryMaster.Item("$", true), "", "", open, () =>
                     {
@@ -673,11 +746,12 @@ namespace GunsmithExpansion
                         ShowMenu(reply, c, root, 0);
                     });
                 }
+                if (menu.Children.Count > perPage)
+                    AddMore(page, menu, root, start, perPage, menu.Children.Count);
                 AddBye(page);
                 return;
             }
             List<string> catalog = menu.Items;
-            int perPage = Math.Max(1, EnsureChoiceBubbles() - 2);
             for (int i = start; i < catalog.Count && i < start + perPage; i++)
             {
                 string id = catalog[i];
@@ -705,12 +779,19 @@ namespace GunsmithExpansion
                         .SetEndAction(EndCall);
                 }, () => pack != null ? CanAffordPack(price) : CanAfford(price));
             }
+            AddMore(page, menu, root, start, perPage, catalog.Count);
+            AddBye(page);
+        }
+
+        private static void AddMore(Dialogue page, Menu menu, Menu root, int start, int perPage, int count)
+        {
+            string name = Name();
             int next = start + perPage;
-            int pages = (catalog.Count + perPage - 1) / perPage;
+            int pages = (count + perPage - 1) / perPage;
             Dialogue more = new Dialogue().SetText("PLAYER", Text.Pick("还有别的吗？", "What else have you got?"));
             page.AddChoice(DirectoryMaster.Item("$", true), "", "", more, () =>
             {
-                if (next < catalog.Count)
+                if (next < count)
                 {
                     Dialogue nextPage = more.NextDialogue().SetText(name, string.Format(Text.Pick("还有这些（{0}/{1}）。", "There's also these ({0}/{1})."), next / perPage + 1, pages));
                     ShowMenu(nextPage, menu, root, next);
@@ -721,7 +802,6 @@ namespace GunsmithExpansion
                     ShowMenu(groups, root, root, 0);
                 }
             });
-            AddBye(page);
         }
 
         private static void AddBye(Dialogue page)

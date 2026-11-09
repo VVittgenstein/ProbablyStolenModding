@@ -75,6 +75,26 @@ namespace GunsmithExpansion
             internal bool Upgrade;
             internal int Budget;
             internal Party Party;
+            internal bool DismissAttached;
+        }
+
+        // The snapshot save's object graph includes these instance fields and the complete multi-gun party.
+        // Weak-table state by itself cannot survive restoration into new order objects.
+        private sealed class RepairOrder : GunOrderData
+        {
+            internal Planned Plan;
+        }
+
+        private static bool TryPlan(GunOrderData order, out Planned plan)
+        {
+            RepairOrder repair = order as RepairOrder;
+            if (repair != null && repair.Plan != null)
+            {
+                plan = repair.Plan;
+                return true;
+            }
+            plan = null;
+            return order != null && planned.TryGetValue(order, out plan);
         }
 
         // What the guns of one customer share.
@@ -126,7 +146,7 @@ namespace GunsmithExpansion
         {
             GunOrderData order = CreateOrder(tier, rng.Next(UpgradeOneIn) == 0);
             Planned p;
-            if (order == null || !planned.TryGetValue(order, out p))
+            if (order == null || !TryPlan(order, out p))
                 return null;
             var party = new Party { Kind = kind };
             party.Orders.Add(order);
@@ -137,7 +157,7 @@ namespace GunsmithExpansion
             {
                 GunOrderData more = CreateOrder(Certificates.PickTier(), p.Upgrade);
                 Planned q;
-                if (more == null || !planned.TryGetValue(more, out q))
+                if (more == null || !TryPlan(more, out q))
                     break;
                 q.Party = party;
                 party.Orders.Add(more);
@@ -190,7 +210,7 @@ namespace GunsmithExpansion
         internal static string KindOf(GunOrderData order)
         {
             Planned p;
-            return order != null && planned.TryGetValue(order, out p) && p.Party != null ? p.Party.Kind : "LL";
+            return order != null && TryPlan(order, out p) && p.Party != null ? p.Party.Kind : "LL";
         }
 
         // After a gun was paid: the lines that bring the customer's next gun, or null when this was his last.
@@ -198,14 +218,14 @@ namespace GunsmithExpansion
         {
             GunOrderData order = client != null ? client.gunOrderData : null;
             Planned p;
-            if (order == null || client.clientIntent != StoreClient.ClientIntent.GUNSMITH || !planned.TryGetValue(order, out p) || p.Party == null)
+            if (order == null || client.clientIntent != StoreClient.ClientIntent.GUNSMITH || !TryPlan(order, out p) || p.Party == null)
                 return null;
             int i = p.Party.Orders.IndexOf(order);
             if (i < 0 || i + 1 >= p.Party.Orders.Count)
                 return null;
             GunOrderData next = p.Party.Orders[i + 1];
             Planned q;
-            if (!planned.TryGetValue(next, out q))
+            if (!TryPlan(next, out q))
                 return null;
             int left = p.Party.Orders.Count - i - 1;
             // Of three guns the second is "another" and the third "the third" or "the last"; of two the second is "another" or "the last".
@@ -234,7 +254,7 @@ namespace GunsmithExpansion
         {
             bool fixedNow = AllFixed(gun);
             Planned p;
-            if (!planned.TryGetValue(order, out p) || p.Party == null)
+            if (!TryPlan(order, out p) || p.Party == null)
                 return fixedNow;
             if (!fixedNow)
                 p.Party.AllFixed = false;
@@ -284,13 +304,16 @@ namespace GunsmithExpansion
             if (faults == null)
                 return null;
 
-            GunOrderData order = GunOrderData.CreateServiceOrder(Math.Min(tier, 3));
+            GunOrderData template = GunOrderData.CreateServiceOrder(Math.Min(tier, 3));
+            var order = new RepairOrder { tier = template.tier, isServiceOrder = true };
             ModReflect.Set(order, "serviceGunId", gun.Id);
+            ModReflect.Set(order, "serviceGunCondition", ModReflect.Get<ItemFeatureList.EquipmentCondition>(template, "serviceGunCondition"));
             order.baseReward = 0;
             order.dialogText = Text.RepairRequest(Text.Pick(gun.NameZh, gun.NameEn), faults);
             int budget = wantsUpgrade ? RollBudget(tier) : 0;
             planned.Remove(order);
-            planned.Add(order, new Planned { Gun = gun, Faults = faults, Upgrade = wantsUpgrade, Budget = budget });
+            order.Plan = new Planned { Gun = gun, Faults = faults, Upgrade = wantsUpgrade, Budget = budget };
+            planned.Add(order, order.Plan);
             GunsmithMod.Log("repair customer with " + gun.Id + " (" + tierName + "), faults " + Describe(faults) + (wantsUpgrade ? ", wants it improved, budget " + budget : ", repair only"));
             return order;
         }
@@ -312,7 +335,65 @@ namespace GunsmithExpansion
         internal static bool IsRepairOrder(GunOrderData order)
         {
             Planned p;
-            return order != null && order.isServiceOrder && planned.TryGetValue(order, out p);
+            return order != null && order.isServiceOrder && TryPlan(order, out p);
+        }
+
+        // TryAcceptAllMid returns the number NOT placed. Game build 26525552's OnOrderGreetingEnd tests the
+        // opposite branch: it retries on the back counter after success and leaves an unplaced gun after failure.
+        // Keep the same gun while the player clears space, and never destroy it as an inventory fallback.
+        internal static void PresentServiceGun(StoreClient client)
+        {
+            GunOrderData order = client != null ? client.gunOrderData : null;
+            Planned plan;
+            if (!TryPlan(order, out plan) || EmporiumEntry.Instance == null || PlayerStore.Instance == null)
+                return;
+            GameItem gun = ModReflect.Get<GameItem>(order, "serviceGun");
+            if (gun == null)
+                gun = order.CreateServiceGun();
+            if (gun == null)
+            {
+                GunsmithMod.Warn("repair service gun creation returned null for " + plan.Gun.Id);
+                return;
+            }
+            if (!plan.DismissAttached)
+            {
+                client.OnDismiss += () =>
+                {
+                    if (client.gunOrderData != null)
+                        client.gunOrderData.ReleaseServiceGun(true);
+                };
+                plan.DismissAttached = true;
+            }
+            GeneralHelper.SetItemOwned(gun, false);
+            if (order.GetPlacedServiceGun() == null)
+            {
+                int remaining = GraphUtils.TryAcceptAllMid(EmporiumEntry.Instance.frontInvinvElement, gun, -1);
+                if (remaining > 0)
+                    GraphUtils.TryAcceptAll(EmporiumEntry.Instance.backInvinvElement, gun, -1);
+            }
+            if (order.GetPlacedServiceGun() != null)
+            {
+                if (NegociationUIManager.Instance != null)
+                    NegociationUIManager.Instance.OpenUI();
+                GunsmithMod.Log("repair service gun placed: " + gun.identifier);
+                return;
+            }
+            GunsmithMod.Log("repair service gun waiting for counter space: " + gun.identifier);
+            if (NegociationUIManager.Instance != null)
+                NegociationUIManager.Instance.CloseUI();
+            if (DialogUIManager.Instance == null)
+                return;
+            var room = new Dialogue().SetText(client.displayName, Text.Pick(
+                "柜台放不下这把枪。请腾出空间后再试。", "There is not enough counter space for this gun. Clear some space and try again."));
+            room.priority = 4;
+            Dialogue retry = new Dialogue().SetText("PLAYER", Text.Pick("再试一次。", "Try again."));
+            // The selected player's line is skipped by SelectChoice. Retry after a displayed follow-up line;
+            // starting another room prompt inside the choice action would replace SelectChoice's currentDialog.
+            retry.NextDialogue().SetText(client.displayName, order.dialogText).SetEndAction(() => PresentServiceGun(client));
+            room.AddChoice(DirectoryMaster.Item("slip", true), retry.plainText, "", retry);
+            Dialogue leave = new Dialogue().SetText("PLAYER", Text.Pick("今天无法接下这笔维修。", "I cannot take this repair today."));
+            room.AddChoice(DirectoryMaster.Item("slip", true), leave.plainText, "", leave, Reservations.Leave);
+            DialogUIManager.Instance.StartDialogue(room, true);
         }
 
         // GunOrderData.CreateServiceGun has made the gun from serviceGunId, set the game's condition and the
@@ -323,7 +404,7 @@ namespace GunsmithExpansion
             order.bonusRequirements.Clear();
             Planned p;
             Dictionary<Fault, FaultState> faults;
-            if (planned.TryGetValue(order, out p))
+            if (TryPlan(order, out p))
             {
                 faults = p.Faults;
             }
@@ -384,7 +465,7 @@ namespace GunsmithExpansion
         {
             GunOrderData order = OrderOf(gun);
             Planned p;
-            return order != null && !(planned.TryGetValue(order, out p) && p.Upgrade);
+            return order != null && !(TryPlan(order, out p) && p.Upgrade);
         }
 
         // An amount of a repair order after the store's offer to the customer at the counter: a discount takes its percent off, an extra
@@ -529,6 +610,18 @@ namespace GunsmithExpansion
             foreach (KeyValuePair<Fault, FaultState> kv in faults)
                 parts.Add(kv.Key + "=" + kv.Value);
             return string.Join(",", parts.ToArray());
+        }
+    }
+
+    [HarmonyPatch(typeof(StoreClientListGun), "OnOrderGreetingEnd")]
+    internal static class RepairServicePlacementPatch
+    {
+        private static bool Prefix(StoreClient storeClient)
+        {
+            if (storeClient == null || !RepairOrders.IsRepairOrder(storeClient.gunOrderData))
+                return true;
+            RepairOrders.PresentServiceGun(storeClient);
+            return false;
         }
     }
 
