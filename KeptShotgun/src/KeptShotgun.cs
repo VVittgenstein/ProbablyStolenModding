@@ -5,7 +5,7 @@ using System.Globalization;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("KeptShotgun")]
-[assembly: System.Reflection.AssemblyVersion("1.1.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.2.0")]
 
 namespace KeptShotgun
 {
@@ -348,7 +348,7 @@ namespace KeptShotgun
         {
             StoreUIManager ui = StoreUIManager.Instance;
             if (ui != null && ui.shootingUI != null)
-                ui.StartCoroutine(ApplyWhenShown(ui));
+                ModHelper.StartCoroutine(KeptShotgunMod.ModId, ApplyWhenShown(ui));
         }
 
         // The base game activates shootingUI once its transition into the aiming view has finished.

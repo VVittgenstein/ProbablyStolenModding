@@ -4,7 +4,7 @@ using System.Globalization;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5ForceSave")]
-[assembly: System.Reflection.AssemblyVersion("1.6.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.2.0")]
 
 namespace F5ForceSave
 {
@@ -705,7 +705,7 @@ namespace F5ForceSave
             if (store != null)
                 store.lockShutterButtonFlag++;
             shutter.ToggleShutterDoor();
-            shutter.StartCoroutine(MetaHelper.WaitAndDo(duration, () => FinishOpening(shutter)));
+            ModHelper.StartCoroutine(F5ForceSaveMod.ModId, MetaHelper.WaitAndDo(duration, () => FinishOpening(shutter)));
         }
 
         // The steps of the callback that StoreShutterButton.OpenShutter schedules after the door animation.
@@ -736,6 +736,8 @@ namespace F5ForceSave
         private const string AugMedId = "aug_med";
         private const string AugMaterialId = "aug_material";
         private const string FlexiBuyerId = "lower_level_flexi_buyer";
+        private const string RevRaiderId = "revRaider";
+        private const string RevQuartermasterId = "revQuartermaster";
 
         internal sealed class Entry
         {
@@ -785,7 +787,8 @@ namespace F5ForceSave
             if (string.IsNullOrEmpty(identifier))
                 return false;
             string key = FactoryKey(identifier);
-            return InDictionary(key) || key == AugMedId || key == AugMaterialId || key == FlexiBuyerId;
+            return InDictionary(key) || key == AugMedId || key == AugMaterialId || key == FlexiBuyerId
+                || key == RevRaiderId || key == RevQuartermasterId;
         }
 
         private static StoreClient Create(Entry entry)
@@ -800,6 +803,11 @@ namespace F5ForceSave
                 client = StoreClientList.CreateAugMaterial(entry.AugTier);
             else if (key == FlexiBuyerId)
                 client = StoreClientList.CreateFlexiBuyer();
+            // HandlePerkClient queues these reputation sellers directly, outside StoreClientListDict.
+            else if (key == RevRaiderId)
+                client = StoreClientListRev.CreateRevRaider();
+            else if (key == RevQuartermasterId)
+                client = StoreClientListRev.CreateRevQuartermaster();
             else
                 return null;
             if (client == null)

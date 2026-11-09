@@ -274,7 +274,7 @@ namespace GunsmithExpansion
             int join = 85;
             try
             {
-                join = Traverse.Create(PlayerStore.Instance).Method("GetAppraisalJoinCost").GetValue<int>();
+                join = (int)ModReflect.Call(PlayerStore.Instance, "GetAppraisalJoinCost");
             }
             catch (Exception)
             {

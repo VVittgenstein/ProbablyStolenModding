@@ -46,12 +46,12 @@ namespace F5SnapshotSave
     internal static class Codec
     {
         internal const string Magic = "F5SnapshotSave";
-        internal const int Format = 1;
+        internal const int Format = 2;
         internal const BindingFlags DeclaredInstance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         internal const BindingFlags DeclaredStatic = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         internal const BindingFlags DeclaredMethods = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
 
-        private static readonly Dictionary<Type, List<FieldInfo>> fieldCache = new Dictionary<Type, List<FieldInfo>>();
+        private static readonly Dictionary<Type, List<SnapshotField>> fieldCache = new Dictionary<Type, List<SnapshotField>>();
 
         internal static string Escape(string s)
         {
@@ -98,20 +98,26 @@ namespace F5SnapshotSave
         }
 
         // Instance fields of a type and of its base types, constants excluded.
-        internal static List<FieldInfo> InstanceFields(Type t)
+        internal static List<SnapshotField> InstanceFields(Type t)
         {
-            List<FieldInfo> list;
+            List<SnapshotField> list;
             if (fieldCache.TryGetValue(t, out list))
                 return list;
-            list = new List<FieldInfo>();
+            list = new List<SnapshotField>();
+            if (!SnapshotSchema.CanDescribe(t))
+                throw new NotSupportedException("no snapshot field schema for " + t.FullName);
             for (Type cur = t; cur != null && cur != typeof(object) && cur != typeof(ValueType); cur = cur.BaseType)
             {
-                foreach (FieldInfo f in cur.GetFields(DeclaredInstance))
+                if (!SnapshotSchema.CanDescribe(cur)) break;
+                foreach (SnapshotField f in SnapshotSchema.DeclaredFields(cur))
                 {
-                    if (!f.IsLiteral)
+                    if (!f.IsStatic)
                         list.Add(f);
                 }
             }
+            var names = new HashSet<string>();
+            foreach (SnapshotField field in list)
+                if (!names.Add(field.Name)) throw new NotSupportedException("hidden field cannot be addressed through ModReflect: " + t.FullName + "." + field.Name);
             fieldCache[t] = list;
             return list;
         }
@@ -157,15 +163,15 @@ namespace F5SnapshotSave
         // when the comparer is something else.
         internal static string ComparerKind(object collection, Type keyType)
         {
-            PropertyInfo p = collection.GetType().GetProperty("Comparer", BindingFlags.Instance | BindingFlags.Public);
-            object comparer = p != null ? p.GetValue(collection, null) : null;
+            ICollectionAccess access = CollectionAccess.For(collection.GetType());
+            object comparer = access.Comparer(collection);
             if (comparer == null)
                 return "D";
             if (ReferenceEquals(comparer, StringComparer.Ordinal)) return "O";
             if (ReferenceEquals(comparer, StringComparer.OrdinalIgnoreCase)) return "I";
             if (ReferenceEquals(comparer, StringComparer.InvariantCulture)) return "N";
             if (ReferenceEquals(comparer, StringComparer.InvariantCultureIgnoreCase)) return "n";
-            object def = typeof(EqualityComparer<>).MakeGenericType(keyType).GetProperty("Default", BindingFlags.Static | BindingFlags.Public).GetValue(null, null);
+            object def = access.DefaultComparer;
             if (ReferenceEquals(comparer, def) || comparer.GetType() == def.GetType())
                 return "D";
             string name = comparer.GetType().Name;
@@ -196,7 +202,7 @@ namespace F5SnapshotSave
 
         private readonly Dictionary<Assembly, int> asmIds = new Dictionary<Assembly, int>();
         private readonly Dictionary<Type, int> typeIds = new Dictionary<Type, int>();
-        private readonly Dictionary<FieldInfo, int> fieldIds = new Dictionary<FieldInfo, int>();
+        private readonly Dictionary<SnapshotField, int> fieldIds = new Dictionary<SnapshotField, int>();
         private readonly Dictionary<MethodInfo, int> methodIds = new Dictionary<MethodInfo, int>();
         private readonly List<string> asmLines = new List<string>();
         private readonly List<string> typeLines = new List<string>();
@@ -240,7 +246,7 @@ namespace F5SnapshotSave
         }
 
         // Writes the given fields of an existing object (found again by path when reading) and a root naming it.
-        internal void AddPartialRoot(string name, object target, IEnumerable<FieldInfo> fields)
+        internal void AddPartialRoot(string name, object target, IEnumerable<SnapshotField> fields)
         {
             string path;
             if (target == null || !TryPath(target, out path))
@@ -253,7 +259,7 @@ namespace F5SnapshotSave
             paths.Add(name);
             var sb = new StringBuilder();
             sb.Append("O\t").Append(id).Append("\tP\t").Append(TypeId(target.GetType())).Append('\t').Append(path);
-            foreach (FieldInfo f in fields)
+            foreach (SnapshotField f in fields)
                 sb.Append('\t').Append(FieldId(f)).Append('=').Append(Value(f.GetValue(target), name + "." + f.Name));
             objectLines.Add(sb.ToString());
             Flush();
@@ -359,7 +365,7 @@ namespace F5SnapshotSave
 
         private void AppendFields(StringBuilder sb, object o, Type t, string path)
         {
-            foreach (FieldInfo f in Codec.InstanceFields(t))
+            foreach (SnapshotField f in Codec.InstanceFields(t))
             {
                 if (ctx.SkipField(f))
                     continue;
@@ -528,8 +534,14 @@ namespace F5SnapshotSave
 
         private bool TryPath(object o, out string path)
         {
-            FieldInfo holder;
-            List<FieldInfo> chain;
+            SnapshotField holder;
+            List<SnapshotField> chain;
+            int index;
+            if (SnapshotSchema.FindArrayReference(o, out holder, out index))
+            {
+                path = "S" + TypeId(holder.DeclaringType) + ":" + FieldId(holder) + ".a" + index;
+                return true;
+            }
             if (!ctx.TryFindPath(o, out holder, out chain))
             {
                 path = null;
@@ -537,7 +549,7 @@ namespace F5SnapshotSave
             }
             var sb = new StringBuilder();
             sb.Append('S').Append(TypeId(holder.DeclaringType)).Append(':').Append(FieldId(holder));
-            foreach (FieldInfo f in chain)
+            foreach (SnapshotField f in chain)
                 sb.Append('.').Append(FieldId(f));
             path = sb.ToString();
             return true;
@@ -581,7 +593,7 @@ namespace F5SnapshotSave
             return id;
         }
 
-        internal int FieldId(FieldInfo f)
+        internal int FieldId(SnapshotField f)
         {
             int id;
             if (fieldIds.TryGetValue(f, out id))
@@ -631,7 +643,7 @@ namespace F5SnapshotSave
 
         private readonly Dictionary<int, Assembly> asms = new Dictionary<int, Assembly>();
         private readonly Dictionary<int, Type> types = new Dictionary<int, Type>();
-        private readonly Dictionary<int, FieldInfo> fields = new Dictionary<int, FieldInfo>();
+        private readonly Dictionary<int, SnapshotField> fields = new Dictionary<int, SnapshotField>();
         private readonly Dictionary<int, MethodInfo> methods = new Dictionary<int, MethodInfo>();
         private readonly Dictionary<int, object> objs = new Dictionary<int, object>();
         private readonly HashSet<int> structsFilled = new HashSet<int>();
@@ -656,6 +668,9 @@ namespace F5SnapshotSave
                 if (Errors.Count > 0)
                     return false;
                 CreateObjects();
+                if (Errors.Count > 0)
+                    return false;
+                BindReadonlyFields();
                 if (Errors.Count > 0)
                     return false;
                 foreach (KeyValuePair<int, string[]> r in objectRecords)
@@ -724,7 +739,7 @@ namespace F5SnapshotSave
                 return;
             }
             string[] header = lines[0].Split('\t');
-            if (header.Length < 3 || header[2] != Codec.Format.ToString(CultureInfo.InvariantCulture))
+            if (header.Length < 3 || (header[2] != "1" && header[2] != Codec.Format.ToString(CultureInfo.InvariantCulture)))
             {
                 Errors.Add("unknown snapshot format " + (header.Length > 2 ? header[2] : "?"));
                 return;
@@ -782,7 +797,7 @@ namespace F5SnapshotSave
                 if (t == null)
                     continue;
                 string name = Codec.Unescape(r.Value[3]);
-                FieldInfo f = t.GetField(name, Codec.DeclaredInstance) ?? t.GetField(name, Codec.DeclaredStatic);
+                SnapshotField f = SnapshotSchema.Field(t, name);
                 if (f == null)
                     Errors.Add("field " + t.FullName + "." + name + " not found");
                 else
@@ -808,10 +823,10 @@ namespace F5SnapshotSave
                 switch (r[2])
                 {
                     case "n":
-                        t = asms[Codec.ParseInt(r[3])].GetType(Codec.Unescape(r[4]), false);
+                        t = SnapshotSchema.ResolveType(asms[Codec.ParseInt(r[3])], Codec.Unescape(r[4]));
                         break;
                     case "g":
-                        Type def = asms[Codec.ParseInt(r[3])].GetType(Codec.Unescape(r[4]), false);
+                        Type def = SnapshotSchema.ResolveType(asms[Codec.ParseInt(r[3])], Codec.Unescape(r[4]));
                         string[] argIds = r[5].Length > 0 ? r[5].Split(',') : new string[0];
                         var args = new Type[argIds.Length];
                         for (int i = 0; i < argIds.Length; i++)
@@ -854,30 +869,17 @@ namespace F5SnapshotSave
             var gs = new Type[gIds.Length];
             for (int i = 0; i < gs.Length; i++)
                 gs[i] = TypeOf(Codec.ParseInt(gIds[i]));
-            foreach (MethodInfo candidate in t.GetMethods(Codec.DeclaredMethods))
+            try
             {
-                if (candidate.Name != name)
-                    continue;
-                MethodInfo m = candidate;
+                MethodInfo m = (MethodInfo)ModReflect.Target(t, name, gs.Length == 0 ? ps : null);
                 if (gs.Length > 0)
                 {
-                    if (!candidate.IsGenericMethodDefinition || candidate.GetGenericArguments().Length != gs.Length)
-                        continue;
-                    try
-                    {
-                        m = candidate.MakeGenericMethod(gs);
-                    }
-                    catch (ArgumentException)
-                    {
-                        continue;
-                    }
+                    if (!m.IsGenericMethodDefinition || m.GetGenericArguments().Length != gs.Length)
+                        throw new NotSupportedException("generic delegate signature changed");
+                    m = m.MakeGenericMethod(gs);
                 }
-                else if (candidate.IsGenericMethodDefinition)
-                    continue;
                 ParameterInfo[] actual = m.GetParameters();
-                if (actual.Length != ps.Length)
-                    continue;
-                bool same = true;
+                bool same = actual.Length == ps.Length;
                 for (int i = 0; i < ps.Length && same; i++)
                     same = actual[i].ParameterType == ps[i];
                 if (same)
@@ -886,6 +888,7 @@ namespace F5SnapshotSave
                     return;
                 }
             }
+            catch (Exception e) { Errors.Add("method " + t.FullName + "." + name + ": " + e.Message); return; }
             Errors.Add("method " + t.FullName + "." + name + " not found");
         }
 
@@ -905,7 +908,12 @@ namespace F5SnapshotSave
                     {
                         case "c":
                         case "s":
-                            objs[id] = FormatterServices.GetUninitializedObject(t);
+                            // The game's readonly members are initialized by its own constructors.
+                            // RichTextBuilder's arrays are then filled through normal array operations.
+                            if (SnapshotTuples.IsTuple(t)) objs[id] = SnapshotTuples.Access(t).Create();
+                            else if (t == typeof(RichTextBuilder)) objs[id] = new RichTextBuilder();
+                            else if (SnapshotSchema.DeclaredFields(t).Exists(f => !f.IsStatic && f.IsReadOnly)) objs[id] = ModReflect.New(t);
+                            else objs[id] = FormatterServices.GetUninitializedObject(t);
                             break;
                         case "a":
                             objs[id] = Array.CreateInstance(t.GetElementType(), Codec.ParseInt(p[4]));
@@ -973,13 +981,21 @@ namespace F5SnapshotSave
             if (steps.Length == 0 || steps[0].Length < 2 || steps[0][0] != 'S')
                 return null;
             string[] head = steps[0].Substring(1).Split(':');
-            FieldInfo holder;
+            SnapshotField holder;
             if (head.Length != 2 || !fields.TryGetValue(Codec.ParseInt(head[1]), out holder))
                 return null;
             object cur = holder.GetValue(null);
             for (int i = 1; i < steps.Length && cur != null; i++)
             {
-                FieldInfo f;
+                if (steps[i].StartsWith("a", StringComparison.Ordinal))
+                {
+                    var array = cur as Array;
+                    int index = Codec.ParseInt(steps[i].Substring(1));
+                    if (array == null || array.Rank != 1 || index < 0 || index >= array.Length) return null;
+                    cur = array.GetValue(index);
+                    continue;
+                }
+                SnapshotField f;
                 if (!fields.TryGetValue(Codec.ParseInt(steps[i]), out f))
                     return null;
                 cur = f.GetValue(cur);
@@ -1034,6 +1050,45 @@ namespace F5SnapshotSave
             return result;
         }
 
+        private void BindReadonlyFields()
+        {
+            var bindings = new Dictionary<int, object>();
+            foreach (KeyValuePair<int, string[]> record in objectRecords)
+            {
+                string[] p = record.Value;
+                if (p[2] != "c") continue;
+                object owner = objs[record.Key];
+                for (int i = 4; i < p.Length; i++)
+                {
+                    int eq = p[i].IndexOf('=');
+                    SnapshotField field;
+                    if (eq < 0 || !fields.TryGetValue(Codec.ParseInt(p[i].Substring(0, eq)), out field) || !field.IsReadOnly) continue;
+                    string value = p[i].Substring(eq + 1);
+                    if (!value.StartsWith("r", StringComparison.Ordinal)) continue;
+                    int id = Codec.ParseInt(value.Substring(1));
+                    object current = field.GetValue(owner), bound;
+                    string[] target = objectRecords[id];
+                    if (target[2] != "a" && target[2] != "l" && target[2] != "h" && target[2] != "q" && target[2] != "k" && target[2] != "d")
+                    { Errors.Add("readonly field needs an unsupported constructor: " + field.Name); continue; }
+                    if (current == null || current.GetType() != objs[id].GetType()
+                        || (current is Array && ((Array)current).Length != Codec.ParseInt(target[4])))
+                    { Errors.Add("readonly collection shape changed: " + field.Name); continue; }
+                    if (bindings.TryGetValue(id, out bound) && !ReferenceEquals(bound, current))
+                    { Errors.Add("readonly collection sharing changed: " + field.Name); continue; }
+                    if (!bindings.ContainsKey(id) && !(current is Array))
+                    {
+                        var list = current as IList;
+                        var dictionary = current as IDictionary;
+                        if (list != null) list.Clear();
+                        else if (dictionary != null) dictionary.Clear();
+                        else CollectionAccess.For(current.GetType()).Clear(current);
+                    }
+                    bindings[id] = current;
+                    objs[id] = current;
+                }
+            }
+        }
+
         private void FillFields(int id, string[] p, int start)
         {
             object o = objs[id];
@@ -1042,7 +1097,7 @@ namespace F5SnapshotSave
             for (int i = start; i < p.Length; i++)
             {
                 int eq = p[i].IndexOf('=');
-                FieldInfo f;
+                SnapshotField f;
                 if (eq < 0 || !fields.TryGetValue(Codec.ParseInt(p[i].Substring(0, eq)), out f))
                 {
                     Errors.Add("object " + id + ": bad field entry");
@@ -1051,7 +1106,8 @@ namespace F5SnapshotSave
                 object v = Resolve(p[i].Substring(eq + 1));
                 try
                 {
-                    f.SetValue(o, v);
+                    o = f.SetValue(o, v);
+                    objs[id] = o;
                 }
                 catch (Exception e)
                 {
@@ -1078,7 +1134,7 @@ namespace F5SnapshotSave
         {
             var instance = (StoreClientInstance)objs[id];
             object client = Resolve(p[4]);
-            FieldInfo f = typeof(StoreClientInstance).GetField("storeClient", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            SnapshotField f = SnapshotSchema.Field(typeof(StoreClientInstance), "storeClient");
             if (f == null)
                 Errors.Add("StoreClientInstance.storeClient not found");
             else
@@ -1105,14 +1161,14 @@ namespace F5SnapshotSave
                         break;
                     case "h":
                     case "q":
-                        MethodInfo add = o.GetType().GetMethod(cat == "h" ? "Add" : "Enqueue");
+                        ICollectionAccess add = CollectionAccess.For(o.GetType());
                         for (int i = 5 - (cat == "q" ? 1 : 0); i < p.Length; i++)
-                            add.Invoke(o, new[] { Resolve(p[i]) });
+                            add.Add(o, Resolve(p[i]));
                         break;
                     case "k":
-                        MethodInfo push = o.GetType().GetMethod("Push");
+                        ICollectionAccess push = CollectionAccess.For(o.GetType());
                         for (int i = p.Length - 1; i >= 4; i--)
-                            push.Invoke(o, new[] { Resolve(p[i]) });
+                            push.Add(o, Resolve(p[i]));
                         break;
                     case "d":
                         var dict = (IDictionary)o;

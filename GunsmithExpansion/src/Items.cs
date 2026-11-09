@@ -54,6 +54,7 @@ namespace GunsmithExpansion
             DeliveryBoxes.Register(directory);
             ChipBox.Register(directory);
             CorpLink.Apply();
+            Manual.Register(directory);
         }
 
         // Built in the order of the game's GunsItemDirectory.CreateSMG: mod window and its slots, picture, name,

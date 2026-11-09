@@ -19,8 +19,8 @@ namespace GunsmithExpansion
     // None of that mod's code or pictures is copied; its source is public to read and its README does not allow passing on
     // changed copies, so everything is done from outside, at run time. Its catalog and windows are internal, with no
     // interface for other mods, so this rests on names that may change: what is missing is logged and the link stays off,
-    // and long-term compatibility is not promised (VVittgenstein: the update notes must say so). Read against its version 0.9.7compat,
-    // and the two mods have not yet been run together.
+    // and long-term compatibility is not promised (VVittgenstein: the update notes must say so). The declared prerequisite
+    // permits the game's ModReflect broker to check access. With CorpPresence absent this integration stays inactive.
     // The patches go on when the item directory is built: every mod is loaded by then, and no saved crate has been
     // read yet, so a crate holding a long gun comes back at its full width. The game's own [HarmonyPatch] pass runs before
     // that mod may have loaded, so it cannot be used for these.
@@ -37,10 +37,8 @@ namespace GunsmithExpansion
         private static Array[] gunPages;
         private static int page;
         private static int crateWidth = CrateWidth;
-        private static FieldInfo themeField;
-        private static FieldInfo buttonStyleField;
-        private static FieldInfo centerStyleField;
-        private static MethodInfo uiButton;
+        private static Type windowType;
+        private static Type uiType;
         private static bool pagerFailed;
 
         internal static void Apply()
@@ -48,12 +46,11 @@ namespace GunsmithExpansion
             if (tried)
                 return;
             tried = true;
-            Assembly corp = Array.Find(AppDomain.CurrentDomain.GetAssemblies(), a => a.GetName().Name == CorpAssembly);
-            if (corp == null)
+            if (!ModHelper.IsModRunning(CorpAssembly))
                 return;
             try
             {
-                Link(corp);
+                Link();
             }
             catch (Exception e)
             {
@@ -61,9 +58,9 @@ namespace GunsmithExpansion
             }
         }
 
-        private static Type NeedType(Assembly corp, string name)
+        private static Type NeedType(string name)
         {
-            Type type = corp.GetType(name);
+            Type type = ModReflect.FindType(name);
             if (type == null)
                 throw new MissingMemberException(name);
             return type;
@@ -76,28 +73,16 @@ namespace GunsmithExpansion
             return member;
         }
 
-        private static void Link(Assembly corp)
+        private static void Link()
         {
-            Type meridian = NeedType(corp, "CorpPresence.MeridianCo");
-            Type entry = NeedType(corp, "CorpPresence.CatalogEntry");
-            Type crates = NeedType(corp, "CorpPresence.Crates");
-            Type window = NeedType(corp, "CorpPresence.UI.CompanyWindow");
-            Type ui = NeedType(corp, "CorpPresence.UI.Ui");
-            Type theme = NeedType(corp, "CorpPresence.UI.Theme");
-            FieldInfo all = Need(AccessTools.Field(meridian, "AllEntries"), "MeridianCo.AllEntries");
-            FieldInfo own = Need(AccessTools.Field(meridian, "Entries"), "MeridianCo.Entries");
-            MethodInfo catalog = Need(AccessTools.PropertyGetter(meridian, "Catalog"), "MeridianCo.Catalog");
-            MethodInfo shell = Need(AccessTools.Method(crates, "CreateShell"), "Crates.CreateShell");
-            MethodInfo order = Need(AccessTools.Method(window, "DrawEquipmentOrder"), "CompanyWindow.DrawEquipmentOrder");
-            themeField = Need(AccessTools.Field(window, "_theme"), "CompanyWindow._theme");
-            uiButton = Need(AccessTools.Method(ui, "Button", new[] { typeof(Rect), typeof(string), typeof(GUIStyle) }), "Ui.Button");
-            buttonStyleField = Need(AccessTools.Field(theme, "BtnStyle"), "Theme.BtnStyle");
-            centerStyleField = Need(AccessTools.Field(theme, "Center"), "Theme.Center");
-            FieldInfo id = Need(AccessTools.Field(entry, "Id"), "CatalogEntry.Id");
-            FieldInfo pageName = Need(AccessTools.Field(entry, "Page"), "CatalogEntry.Page");
-            FieldInfo minTier = Need(AccessTools.Field(entry, "MinTier"), "CatalogEntry.MinTier");
-            FieldInfo label = Need(AccessTools.Field(entry, "Label"), "CatalogEntry.Label");
-            FieldInfo labelEn = Need(AccessTools.Field(entry, "LabelEn"), "CatalogEntry.LabelEn");
+            Type meridian = NeedType("CorpPresence.MeridianCo");
+            Type entry = NeedType("CorpPresence.CatalogEntry");
+            Type crates = NeedType("CorpPresence.Crates");
+            windowType = NeedType("CorpPresence.UI.CompanyWindow");
+            uiType = NeedType("CorpPresence.UI.Ui");
+            MethodBase catalog = ModReflect.Target(meridian, "get_Catalog");
+            MethodBase shell = ModReflect.Target(crates, "CreateShell");
+            MethodBase order = ModReflect.Target(windowType, "DrawEquipmentOrder");
 
             var guns = new List<GunDef>();
             foreach (GunDef d in Catalog.Guns)
@@ -110,22 +95,22 @@ namespace GunsmithExpansion
             var entries = new List<object>();
             foreach (GunDef d in guns)
             {
-                object e = Activator.CreateInstance(entry);
-                id.SetValue(e, "@" + d.Id); // the @ and the page make MeridianCo.MakeNew build it factory new, as its own guns
-                pageName.SetValue(e, "制式");
-                minTier.SetValue(e, TierOf(d));
-                label.SetValue(e, d.NameZh);
-                labelEn.SetValue(e, d.NameEn);
+                object e = ModReflect.New(entry);
+                ModReflect.Set(e, "Id", "@" + d.Id); // the @ and the page make MeridianCo.MakeNew build it factory new, as its own guns
+                ModReflect.Set(e, "Page", "制式");
+                ModReflect.Set(e, "MinTier", TierOf(d));
+                ModReflect.Set(e, "Label", d.NameZh);
+                ModReflect.Set(e, "LabelEn", d.NameEn);
                 entries.Add(e);
             }
 
-            var old = (Array)all.GetValue(null);
+            var old = ModReflect.GetStatic<Array>(meridian, "AllEntries");
             Array merged = Array.CreateInstance(entry, old.Length + entries.Count);
             Array.Copy(old, merged, old.Length);
             for (int i = 0; i < entries.Count; i++)
                 merged.SetValue(entries[i], old.Length + i);
             mergedEntries = merged;
-            ownEntries = own.GetValue(null);
+            ownEntries = ModReflect.GetStatic(meridian, "Entries");
             gunPages = new Array[(entries.Count + PerPage - 1) / PerPage];
             for (int p = 0; p < gunPages.Length; p++)
             {
@@ -188,14 +173,14 @@ namespace GunsmithExpansion
                 return;
             try
             {
-                object theme = themeField.GetValue(null);
-                var buttonStyle = (GUIStyle)buttonStyleField.GetValue(theme);
+                object theme = ModReflect.GetStatic(windowType, "_theme");
+                var buttonStyle = ModReflect.Get<GUIStyle>(theme, "BtnStyle");
                 int total = gunPages.Length + 1;
                 page = Math.Max(0, Math.Min(page, total - 1));
-                if ((bool)uiButton.Invoke(null, new object[] { new Rect(__0.xMax - 150f, __0.y - 40f, 32f, 26f), "‹", buttonStyle }) && page > 0)
+                if (PageButton(new Rect(__0.xMax - 150f, __0.y - 40f, 32f, 26f), "‹", buttonStyle) && page > 0)
                     page--;
-                GUI.Label(new Rect(__0.xMax - 116f, __0.y - 40f, 80f, 26f), (page + 1) + "/" + total, (GUIStyle)centerStyleField.GetValue(theme));
-                if ((bool)uiButton.Invoke(null, new object[] { new Rect(__0.xMax - 34f, __0.y - 40f, 32f, 26f), "›", buttonStyle }) && page < total - 1)
+                GUI.Label(new Rect(__0.xMax - 116f, __0.y - 40f, 80f, 26f), (page + 1) + "/" + total, ModReflect.Get<GUIStyle>(theme, "Center"));
+                if (PageButton(new Rect(__0.xMax - 34f, __0.y - 40f, 32f, 26f), "›", buttonStyle) && page < total - 1)
                     page++;
                 if (page > 0)
                     __1 = gunPages[page - 1];
@@ -205,6 +190,11 @@ namespace GunsmithExpansion
                 pagerFailed = true;
                 GunsmithMod.Warn("the Meridian form's pages are off: " + e.Message);
             }
+        }
+
+        private static bool PageButton(Rect rect, string text, GUIStyle style)
+        {
+            return (bool)ModReflect.CallStatic(uiType, "Button", new[] { typeof(Rect), typeof(string), typeof(GUIStyle) }, rect, text, style);
         }
     }
 }

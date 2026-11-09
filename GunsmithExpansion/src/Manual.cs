@@ -342,22 +342,10 @@ namespace GunsmithExpansion
         }
     }
 
-    // The items join this mod's other items when the store's item directories start (Items.OnItemDirectoryInit, which GunsmithMod.OnEnable hooks to
-    // ModHook.OnModItemDirectoryInit), in the same directory, so a saved manual is rebuilt from its identifier on loading.
-    [HarmonyPatch(typeof(Items), nameof(Items.OnItemDirectoryInit))]
-    internal static class ManualItemsPostfix
+    // Invoked by the game's new-game hook after the starting items are in place.
+    internal static class ManualStartHook
     {
-        private static void Postfix(ModItemDirectory directory)
-        {
-            Manual.Register(directory);
-        }
-    }
-
-    // The gunsmith start, where GunsmithStartSignPatch gives the sign, the certificate and the pistol cabinet; the order of the two postfixes does not matter.
-    [HarmonyPatch(typeof(NewGameData), "HandleInitialItem")]
-    internal static class ManualStartPostfix
-    {
-        private static void Postfix()
+        internal static void OnNewGameStarted(string startId)
         {
             try
             {
@@ -372,18 +360,17 @@ namespace GunsmithExpansion
     }
 
     // Buying the retired gunsmith service. NetworkUpgrade.Unlock runs the service's own action (his starter kit on the counter top) and then raises
-    // ModHook.OnNetworkUpgradeUnlocked, where RetiredGunsmithService gives the sign, the certificate and the pistol cabinet; this runs right after. The
+    // ModHook.OnNetworkUpgradeUnlocked, where RetiredGunsmithService gives the sign, the certificate and the pistol cabinet; this subscriber runs after it. The
     // gunsmith start sets the service unlocked without Unlock (NewGameData.HandleInitialItem), so the start does not get the books twice. In game 1.0.0.12
     // Unlock is called by the network window (WildUIManager.OnUnlockClicked, WildNetworkUI.OnUseClicked), by starting perks only for the two water taps,
     // and by kits of the developer panel.
-    [HarmonyPatch(typeof(NetworkUpgrade), nameof(NetworkUpgrade.Unlock))]
-    internal static class ManualServicePostfix
+    internal static class ManualServiceHook
     {
-        private static void Postfix(NetworkUpgrade __instance)
+        internal static void OnUpgradeUnlocked(string id)
         {
             try
             {
-                if (__instance != null && __instance.id == NetworkUpgrade.RETIRED_GUNSMITH && EmporiumEntry.Instance != null)
+                if (id == NetworkUpgrade.RETIRED_GUNSMITH && EmporiumEntry.Instance != null)
                     Manual.Give(EmporiumEntry.Instance.backInvinvElement, "retired gunsmith service");
             }
             catch (Exception e)

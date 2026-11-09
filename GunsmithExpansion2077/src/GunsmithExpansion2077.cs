@@ -1,5 +1,5 @@
 [assembly: System.Reflection.AssemblyTitle("GunsmithExpansion2077")]
-[assembly: System.Reflection.AssemblyVersion("0.7.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.7.1.0")]
 
 namespace GunsmithExpansion2077
 {

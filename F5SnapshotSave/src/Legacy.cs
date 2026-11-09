@@ -118,6 +118,8 @@ namespace F5SnapshotSave
         private const string AugMedId = "aug_med";
         private const string AugMaterialId = "aug_material";
         private const string FlexiBuyerId = "lower_level_flexi_buyer";
+        private const string RevRaiderId = "revRaider";
+        private const string RevQuartermasterId = "revQuartermaster";
 
         internal sealed class Entry
         {
@@ -154,6 +156,11 @@ namespace F5SnapshotSave
                 client = StoreClientList.CreateAugMaterial(entry.AugTier);
             else if (key == FlexiBuyerId)
                 client = StoreClientList.CreateFlexiBuyer();
+            // Also needed when loading a basic F5 save, or when a snapshot must use its legacy queue.
+            else if (key == RevRaiderId)
+                client = StoreClientListRev.CreateRevRaider();
+            else if (key == RevQuartermasterId)
+                client = StoreClientListRev.CreateRevQuartermaster();
             else
                 return null;
             if (client == null)

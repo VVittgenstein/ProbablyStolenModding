@@ -9,12 +9,12 @@ namespace F5SnapshotSave
     // with the game's own item encoding, and assets found by name.
     internal sealed class SnapshotContext
     {
-        private readonly Dictionary<object, KeyValuePair<FieldInfo, List<FieldInfo>>> knownPaths =
-            new Dictionary<object, KeyValuePair<FieldInfo, List<FieldInfo>>>(ReferenceComparer.Instance);
+        private readonly Dictionary<object, KeyValuePair<SnapshotField, List<SnapshotField>>> knownPaths =
+            new Dictionary<object, KeyValuePair<SnapshotField, List<SnapshotField>>>(ReferenceComparer.Instance);
         private readonly HashSet<object> placedItems = new HashSet<object>(ReferenceComparer.Instance);
         private readonly Dictionary<int, GameItem> itemsByUid = new Dictionary<int, GameItem>();
         private readonly HashSet<int> sharedUids = new HashSet<int>();
-        private static readonly Dictionary<Type, List<FieldInfo>> staticHolders = new Dictionary<Type, List<FieldInfo>>();
+        private static readonly Dictionary<Type, List<SnapshotField>> staticHolders = new Dictionary<Type, List<SnapshotField>>();
 
         internal static SnapshotContext Create()
         {
@@ -31,13 +31,13 @@ namespace F5SnapshotSave
             PlayerStore store = PlayerStore.HasInstance ? PlayerStore.Instance : null;
             if (store != null)
             {
-                FieldInfo holder = FindStaticHolder(store);
+                SnapshotField holder = FindStaticHolder(store);
                 if (holder != null)
                 {
-                    AddRoot(store, holder, new List<FieldInfo>());
-                    FieldInfo managerField = typeof(PlayerStore).GetField("storeClientManager");
+                    AddRoot(store, holder, new List<SnapshotField>());
+                    SnapshotField managerField = SnapshotSchema.Field(typeof(PlayerStore), "storeClientManager");
                     if (managerField != null && store.storeClientManager != null)
-                        AddRoot(store.storeClientManager, holder, new List<FieldInfo> { managerField });
+                        AddRoot(store.storeClientManager, holder, new List<SnapshotField> { managerField });
                 }
             }
             AddSingleton(StoreStation.Instance);
@@ -48,16 +48,16 @@ namespace F5SnapshotSave
         {
             if (o == null)
                 return;
-            FieldInfo holder = FindStaticHolder(o);
+            SnapshotField holder = FindStaticHolder(o);
             if (holder != null)
-                AddRoot(o, holder, new List<FieldInfo>());
+                AddRoot(o, holder, new List<SnapshotField>());
         }
 
-        private void AddRoot(object root, FieldInfo holder, List<FieldInfo> prefix)
+        private void AddRoot(object root, SnapshotField holder, List<SnapshotField> prefix)
         {
             if (!knownPaths.ContainsKey(root))
-                knownPaths[root] = new KeyValuePair<FieldInfo, List<FieldInfo>>(holder, prefix);
-            foreach (FieldInfo f in Codec.InstanceFields(root.GetType()))
+                knownPaths[root] = new KeyValuePair<SnapshotField, List<SnapshotField>>(holder, prefix);
+            foreach (SnapshotField f in Codec.InstanceFields(root.GetType()))
             {
                 object v;
                 try
@@ -72,36 +72,35 @@ namespace F5SnapshotSave
                     continue;
                 if (knownPaths.ContainsKey(v))
                     continue;
-                var chain = new List<FieldInfo>(prefix) { f };
-                knownPaths[v] = new KeyValuePair<FieldInfo, List<FieldInfo>>(holder, chain);
+                var chain = new List<SnapshotField>(prefix) { f };
+                knownPaths[v] = new KeyValuePair<SnapshotField, List<SnapshotField>>(holder, chain);
             }
         }
 
         // A static field that currently holds the object: a field whose name contains "instance" (singletons and
         // auto-property backing fields), "<>9" (the instance of a compiler-generated lambda class), or any static
         // field for Unity objects.
-        private static FieldInfo FindStaticHolder(object o)
+        private static SnapshotField FindStaticHolder(object o)
         {
             Type t = o.GetType();
             bool unity = o is UnityEngine.Object;
             for (Type cur = t; cur != null && cur != typeof(object); cur = cur.BaseType)
             {
-                List<FieldInfo> candidates;
+                if (!SnapshotSchema.CanDescribe(cur)) break;
+                List<SnapshotField> candidates;
                 if (!staticHolders.TryGetValue(cur, out candidates))
                 {
-                    candidates = new List<FieldInfo>();
-                    foreach (FieldInfo f in cur.GetFields(Codec.DeclaredStatic))
+                    candidates = new List<SnapshotField>();
+                    foreach (SnapshotField f in SnapshotSchema.DeclaredFields(cur))
                     {
-                        if (f.IsLiteral || f.FieldType.IsValueType || f.FieldType == typeof(string))
+                        if (!f.IsStatic || f.IsValueType || f.FieldTypeName == "System.String")
                             continue;
                         candidates.Add(f);
                     }
                     staticHolders[cur] = candidates;
                 }
-                foreach (FieldInfo f in candidates)
+                foreach (SnapshotField f in candidates)
                 {
-                    if (!f.FieldType.IsAssignableFrom(t))
-                        continue;
                     bool named = f.Name == "<>9" || f.Name.IndexOf("instance", StringComparison.OrdinalIgnoreCase) >= 0;
                     if (!named && !unity)
                         continue;
@@ -121,9 +120,9 @@ namespace F5SnapshotSave
             return null;
         }
 
-        internal bool TryFindPath(object o, out FieldInfo holder, out List<FieldInfo> chain)
+        internal bool TryFindPath(object o, out SnapshotField holder, out List<SnapshotField> chain)
         {
-            KeyValuePair<FieldInfo, List<FieldInfo>> known;
+            KeyValuePair<SnapshotField, List<SnapshotField>> known;
             if (knownPaths.TryGetValue(o, out known))
             {
                 holder = known.Key;
@@ -131,11 +130,11 @@ namespace F5SnapshotSave
                 return true;
             }
             holder = FindStaticHolder(o);
-            chain = new List<FieldInfo>();
+            chain = new List<SnapshotField>();
             return holder != null;
         }
 
-        internal bool SkipField(FieldInfo f)
+        internal bool SkipField(SnapshotField f)
         {
             return false;
         }

@@ -104,7 +104,7 @@ namespace GunsmithExpansion
         {
             MonoBehaviour host = DialogUIManager.Instance;
             if (host != null && host.isActiveAndEnabled)
-                host.StartCoroutine(MetaHelper.WaitAndDo(CheckDelay, () => RemoveIfEmpty(box, inside)));
+                ModHelper.StartCoroutine(GunsmithMod.ModId, MetaHelper.WaitAndDo(CheckDelay, () => RemoveIfEmpty(box, inside)));
             else
                 RemoveIfEmpty(box, inside);
         }

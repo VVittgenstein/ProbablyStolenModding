@@ -1,5 +1,5 @@
 [assembly: System.Reflection.AssemblyTitle("GunsmithExpansion")]
-[assembly: System.Reflection.AssemblyVersion("0.7.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.7.1.0")]
 
 namespace GunsmithExpansion
 {
@@ -9,7 +9,7 @@ namespace GunsmithExpansion
     {
         internal const string ModId = "GunsmithExpansion";
         internal const string LogPrefix = "[GunsmithExpansion] ";
-        internal static string Version = "0.7.0";
+        internal static string Version = "0.7.1";
 
         public void Init(ModManifest manifest)
         {
@@ -31,6 +31,12 @@ namespace GunsmithExpansion
             ModHook.OnGameLoadedLate += Cabinets.OnGameLoaded;
             ModHook.OnNetworkUpgradeUnlocked -= RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked += RetiredGunsmithService.OnUpgradeUnlocked;
+            ModHook.OnNetworkUpgradeUnlocked -= ManualServiceHook.OnUpgradeUnlocked;
+            ModHook.OnNetworkUpgradeUnlocked += ManualServiceHook.OnUpgradeUnlocked;
+            ModHook.OnNewGameStarted -= GunsmithStartSignHook.OnNewGameStarted;
+            ModHook.OnNewGameStarted += GunsmithStartSignHook.OnNewGameStarted;
+            ModHook.OnNewGameStarted -= ManualStartHook.OnNewGameStarted;
+            ModHook.OnNewGameStarted += ManualStartHook.OnNewGameStarted;
             Cabinets.DefineSettings();
             AddOn2077.DefineSettings();
             Phone.Register();
@@ -51,6 +57,9 @@ namespace GunsmithExpansion
             ModHook.OnGameLoadedLate -= GameGunLevels.OnGameLoaded;
             ModHook.OnGameLoadedLate -= Cabinets.OnGameLoaded;
             ModHook.OnNetworkUpgradeUnlocked -= RetiredGunsmithService.OnUpgradeUnlocked;
+            ModHook.OnNetworkUpgradeUnlocked -= ManualServiceHook.OnUpgradeUnlocked;
+            ModHook.OnNewGameStarted -= GunsmithStartSignHook.OnNewGameStarted;
+            ModHook.OnNewGameStarted -= ManualStartHook.OnNewGameStarted;
         }
 
         internal static void Log(string s)

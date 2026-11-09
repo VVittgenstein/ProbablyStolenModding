@@ -299,7 +299,7 @@ namespace F5SnapshotSave
         {
             errors = new List<string>();
             string format = Get(FormatKey);
-            if (format != Codec.Format.ToString(CultureInfo.InvariantCulture))
+            if (format != "1" && format != Codec.Format.ToString(CultureInfo.InvariantCulture))
             {
                 errors.Add("unknown snapshot format " + format);
                 return null;

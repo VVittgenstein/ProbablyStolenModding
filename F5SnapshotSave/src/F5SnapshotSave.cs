@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.5.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.5.2.0")]
 
 namespace F5SnapshotSave
 {
@@ -779,7 +779,7 @@ namespace F5SnapshotSave
             if (store != null)
                 store.lockShutterButtonFlag++;
             shutter.ToggleShutterDoor();
-            shutter.StartCoroutine(MetaHelper.WaitAndDo(duration, () => FinishOpening(shutter)));
+            ModHelper.StartCoroutine(F5SnapshotSaveMod.ModId, MetaHelper.WaitAndDo(duration, () => FinishOpening(shutter)));
         }
 
         // The steps of the callback that StoreShutterButton.OpenShutter schedules after the door animation.

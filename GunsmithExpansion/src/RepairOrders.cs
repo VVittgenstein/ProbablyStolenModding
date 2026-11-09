@@ -285,7 +285,7 @@ namespace GunsmithExpansion
                 return null;
 
             GunOrderData order = GunOrderData.CreateServiceOrder(Math.Min(tier, 3));
-            Traverse.Create(order).Field("serviceGunId").SetValue(gun.Id);
+            ModReflect.Set(order, "serviceGunId", gun.Id);
             order.baseReward = 0;
             order.dialogText = Text.RepairRequest(Text.Pick(gun.NameZh, gun.NameEn), faults);
             int budget = wantsUpgrade ? RollBudget(tier) : 0;
@@ -395,7 +395,7 @@ namespace GunsmithExpansion
             if (withoutBargain || amount == 0 || bargain == null || CurrentCustomer() == null)
                 return amount;
             int percent = bargain.DiscountOffered ? -bargain.DiscountPercent
-                : Traverse.Create(bargain).Field("markupApplied").GetValue<bool>() ? bargain.MarkupPercent : 0;
+                : ModReflect.Get<bool>(bargain, "markupApplied") ? bargain.MarkupPercent : 0;
             return percent == 0 ? amount : (int)Math.Round(amount * (100 + percent) / 100.0, MidpointRounding.AwayFromZero);
         }
 

@@ -249,10 +249,9 @@ namespace GunsmithExpansion
         }
     }
 
-    [HarmonyPatch(typeof(NewGameData), "HandleInitialItem")]
-    internal static class GunsmithStartSignPatch
+    internal static class GunsmithStartSignHook
     {
-        private static void Postfix()
+        internal static void OnNewGameStarted(string startId)
         {
             try
             {
