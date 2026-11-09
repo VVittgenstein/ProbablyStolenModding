@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Manifest>
+  <ID>KeptShotgun</ID>
+  <Name>持枪抢劫与威胁议价 Armed Robbery &amp; Intimidation</Name>
+  <Author>dwqadad123</Author>
+  <ModVersion>1.1.2</ModVersion>
+  <Description>新增开局特性“持枪抢劫与威胁议价”（正面特性，1 点）：改造体被消灭后治安部不收枪；举枪时按鼠标中键抢劫顾客，讲价时用“威胁”可以让普通顾客打折。Adds the starting perk "Armed Robbery &amp; Intimidation" (positive, 1 point): security does not take your shotgun after the augs are gone; while aiming, the middle mouse button robs the customer, and Threaten in the bargaining panel can get a regular customer to give a discount. Добавляет начальную особенность «Вооружённое ограбление и запугивание» (положительная, 1 очко): после уничтожения аугов Служба безопасности не забирает дробовик; когда вы целитесь, средняя кнопка мыши грабит клиента, а вариант «Угрожать» в переговорах может заставить обычного клиента сделать скидку.</Description>
+  <GameVersions>
+    <Version>0.46D</Version>
+  </GameVersions>
+  <Prerequisites/>
+  <Assemblies>
+    <Assembly>KeptShotgun.dll</Assembly>
+  </Assemblies>
+  <Capabilities/>
+</Manifest>

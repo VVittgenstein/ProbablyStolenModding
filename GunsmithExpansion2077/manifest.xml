@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Manifest>
+  <ID>GunsmithExpansion2077</ID>
+  <Name>枪匠拓展 2077 Add-On  Gunsmith Expansion 2077 Add-On</Name>
+  <Author>dwqadad123</Author>
+  <ModVersion>0.7.1</ModVersion>
+  <Description>枪匠拓展的附加内容：4 把《赛博朋克 2077》的枪（应龙、同志的铁锤、Malorian Arms 3516、八星铳）。当前没有做配件的适配。需要枪匠拓展 0.7 以上，并在枪匠拓展的 Mod 设置里打开开关。 Add-on for Gunsmith Expansion: 4 guns from Cyberpunk 2077 (Yinglong, Comrade's Hammer, Malorian Arms 3516, Ba Xing Chong). Gun mods are not supported on them at present. Needs Gunsmith Expansion 0.7 or later, with the switch turned on in its mod settings.</Description>
+  <GameVersions>
+    <Version>0.46D</Version>
+  </GameVersions>
+  <Prerequisites>
+    <Mod>GunsmithExpansion</Mod>
+  </Prerequisites>
+  <Assemblies>
+    <Assembly>GunsmithExpansion2077.dll</Assembly>
+  </Assemblies>
+  <Capabilities/>
+</Manifest>

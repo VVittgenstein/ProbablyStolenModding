@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Manifest>
+  <ID>MentorNoteAutoFile</ID>
+  <Name>导师笔记自动收进手册 Mentor Notes to Manual</Name>
+  <Author>dwqadad123</Author>
+  <ModVersion>1.1.1</ModVersion>
+  <Description>把导师笔记拖进放有导师手册的空间时，笔记自动收进导师手册。Dropping a Mentor's Note into a space that holds the mentor's manual files the note into the manual.</Description>
+  <GameVersions>
+    <Version>0.46D</Version>
+  </GameVersions>
+  <Prerequisites/>
+  <Assemblies>
+    <Assembly>MentorNoteAutoFile.dll</Assembly>
+  </Assemblies>
+  <Capabilities/>
+</Manifest>
