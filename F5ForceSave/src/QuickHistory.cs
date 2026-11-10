@@ -7,11 +7,10 @@ namespace F5ForceSave
     // F5 saves and the game's own saves (at the start of each day and for a new game) share the slot's history
     // (SaveFiles.LoadHistory). Before every save the game moves the slot file into the history (RotateIntoHistory)
     // and then keeps "Saved days per run" (EmporiumOption.SaveHistoryDays) saves in all, the slot file included,
-    // deleting the oldest history entries (TrimHistory). Here the two kinds are counted apart: up to SaveHistoryDays
-    // of each kind are kept, the slot file included, and the oldest of a kind is deleted.
-    // Which saves are F5 saves is recorded in the save index under IndexKey: the save time of each F5 save in whole
-    // seconds, as the slot preview (SavePreviewData.lastSaveDateTime) and the history entries
-    // (SaveHistoryEntry.saveDateTime) hold it. F5 Quick Save Plus (F5SnapshotSave) keeps the same record. On the Load
+    // deleting the oldest history entries (TrimHistory). Here the two kinds are counted apart. Automatic saves
+    // retain the game's limit; manual saves use their own optional limit, including the current slot file.
+    // File-local F5 data survives duplication; the older IndexKey timestamps, rounded to whole seconds, remain
+    // a fallback when a file cannot be read. F5 Quick Save Plus (F5SnapshotSave) keeps the same index. On the Load
     // Game screen the day and money of every save end with " | F5" or " | Auto".
     internal static class QuickHistory
     {
@@ -21,6 +20,8 @@ namespace F5ForceSave
         private static bool trimming;
         private static bool quickInProgress;
         private static readonly Queue<DateTime> pendingLabels = new Queue<DateTime>();
+        private static readonly Queue<string> pendingFiles = new Queue<string>();
+        private static readonly Queue<int> pendingDays = new Queue<int>();
         private static HashSet<long> labelMarks;
 
         // F5 Quick Save Plus handles F5 and this record itself while it runs. Its object is named "F5SnapshotSave"
@@ -50,7 +51,7 @@ namespace F5ForceSave
             try
             {
                 SavePreviewData preview = SaveFiles.IndexLoad<SavePreviewData>("preview_" + slotId, null);
-                quick = preview != null && IsQuick(preview.lastSaveDateTime);
+                quick = preview != null && SaveDetails.IsQuick(SaveFiles.Slot(slotId), preview.dayCount, IsQuick(preview.lastSaveDateTime));
             }
             catch (Exception e)
             {
@@ -70,46 +71,52 @@ namespace F5ForceSave
             {
                 int perKind = Math.Max(1, keepCount + 1);
                 HashSet<long> marks = Load();
-                // The save being made becomes the slot file and takes one place of its kind.
-                int quickRoom = quickInProgress ? perKind - 1 : perKind;
-                int autoRoom = quickInProgress ? perKind : perKind - 1;
-                var keep = new List<SaveHistoryEntry>();
-                var drop = new List<SaveHistoryEntry>();
-                foreach (SaveHistoryEntry entry in history)
-                {
-                    bool quick = entry != null && marks.Contains(Key(entry.saveDateTime));
-                    if (quick ? quickRoom > 0 : autoRoom > 0)
-                    {
-                        keep.Add(entry);
-                        if (quick)
-                            quickRoom--;
-                        else
-                            autoRoom--;
-                    }
-                    else
-                        drop.Add(entry);
-                }
-                history.Clear();
-                history.AddRange(keep);
-                history.AddRange(drop);
-                keepCount = keep.Count;
-                if (drop.Count == 0)
+                keepCount = OrderForRetention(history, quickInProgress, perKind, SaveSettings.LimitManual, SaveSettings.ManualLimit,
+                    entry => entry != null && SaveDetails.IsQuick(entry.file, entry.dayCount, marks.Contains(Key(entry.saveDateTime))));
+                if (history.Count == keepCount)
                     return;
                 var names = new List<string>();
-                foreach (SaveHistoryEntry entry in drop)
+                foreach (SaveHistoryEntry entry in history.GetRange(keepCount, history.Count - keepCount))
                 {
                     if (entry == null)
                         continue;
                     names.Add(entry.file);
-                    marks.Remove(Key(entry.saveDateTime));
+                    // A copied slot can still need this same timestamp. File-local
+                    // evidence is authoritative; retain legacy marks for old copies.
                 }
-                Save(marks);
-                UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "save history: up to " + perKind + " of each kind kept; removed " + string.Join(", ", names.ToArray()));
+                UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "save history: auto limit " + perKind + ", manual limit "
+                    + (SaveSettings.LimitManual ? SaveSettings.ManualLimit.ToString(CultureInfo.InvariantCulture) : "unlimited")
+                    + "; removed " + string.Join(", ", names.ToArray()));
             }
             catch (Exception e)
             {
                 UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "keeping F5 saves and the game's saves apart in the history failed; the game's own trimming applies: " + e);
             }
+        }
+
+        // Partition only. The original game routine remains responsible for
+        // deleting the tail and saving the existing history index.
+        internal static int OrderForRetention(List<SaveHistoryEntry> history, bool latestQuick, int autoLimit,
+            bool limitManual, int manualLimit, Func<SaveHistoryEntry, bool> isQuick)
+        {
+            int quickRoom = limitManual ? Math.Max(1, manualLimit) - (latestQuick ? 1 : 0) : int.MaxValue;
+            int autoRoom = Math.Max(1, autoLimit) - (latestQuick ? 0 : 1);
+            var keep = new List<SaveHistoryEntry>();
+            var drop = new List<SaveHistoryEntry>();
+            foreach (SaveHistoryEntry entry in history)
+            {
+                bool quick = isQuick(entry);
+                if (quick ? quickRoom > 0 : autoRoom > 0)
+                {
+                    keep.Add(entry);
+                    if (quick) quickRoom--; else autoRoom--;
+                }
+                else drop.Add(entry);
+            }
+            history.Clear();
+            history.AddRange(keep);
+            history.AddRange(drop);
+            return keep.Count;
         }
 
         // After an F5 save: the slot preview now holds the time of this save.
@@ -126,7 +133,7 @@ namespace F5ForceSave
             }
             catch (Exception e)
             {
-                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "recording the F5 save failed; the Load Game screen shows it as Auto: " + e);
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "recording the legacy F5 timestamp failed: " + e);
             }
         }
 
@@ -138,14 +145,14 @@ namespace F5ForceSave
             file = null;
             HashSet<long> marks = Load();
             SavePreviewData preview = SaveUIManager.GetPreview(slotId);
-            if (preview != null && marks.Contains(Key(preview.lastSaveDateTime)))
+            if (preview != null && SaveDetails.IsQuick(SaveFiles.Slot(slotId), preview.dayCount, marks.Contains(Key(preview.lastSaveDateTime))))
                 return true;
             List<SaveHistoryEntry> history = SaveFiles.LoadHistory(slotId);
             if (history == null)
                 return false;
             foreach (SaveHistoryEntry entry in history)
             {
-                if (entry != null && marks.Contains(Key(entry.saveDateTime)))
+                if (entry != null && SaveDetails.IsQuick(entry.file, entry.dayCount, marks.Contains(Key(entry.saveDateTime))))
                 {
                     file = entry.file;
                     return true;
@@ -169,7 +176,11 @@ namespace F5ForceSave
                 return;
             SavePreviewData preview = SaveUIManager.GetPreview(slots[index]);
             if (preview != null)
+            {
                 pendingLabels.Enqueue(preview.lastSaveDateTime);
+                pendingFiles.Enqueue(SaveFiles.Slot(slots[index]));
+                pendingDays.Enqueue(preview.dayCount);
+            }
         }
 
         internal static void BeginRows(List<SaveHistoryEntry> history)
@@ -178,12 +189,18 @@ namespace F5ForceSave
             if (history == null || HandledByPlus())
                 return;
             foreach (SaveHistoryEntry entry in history)
+            {
                 pendingLabels.Enqueue(entry != null ? entry.saveDateTime : DateTime.MinValue);
+                pendingFiles.Enqueue(entry != null ? entry.file : null);
+                pendingDays.Enqueue(entry != null ? entry.dayCount : -1);
+            }
         }
 
         internal static void EndLabels()
         {
             pendingLabels.Clear();
+            pendingFiles.Clear();
+            pendingDays.Clear();
             labelMarks = null;
         }
 
@@ -192,11 +209,14 @@ namespace F5ForceSave
             if (pendingLabels.Count == 0)
                 return dayAndMoney;
             DateTime saved = pendingLabels.Dequeue();
+            string file = pendingFiles.Dequeue();
+            int day = pendingDays.Dequeue();
             try
             {
-                if (labelMarks == null)
-                    labelMarks = Load();
-                return dayAndMoney + Text.SaveKind(labelMarks.Contains(Key(saved)));
+                var record = SaveDetails.Read(file, day);
+                if (!record.Readable && labelMarks == null) labelMarks = Load();
+                bool quick = SaveDetails.Resolve(record, !record.Readable && labelMarks.Contains(Key(saved))) == SaveDetails.Kind.Quick;
+                return SaveDetailsUi.Describe(dayAndMoney + Text.SaveKind(quick), record, quick, SaveDetailsUi.LanguageCode());
             }
             catch (Exception)
             {

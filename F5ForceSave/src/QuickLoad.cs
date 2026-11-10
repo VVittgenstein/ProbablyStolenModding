@@ -11,7 +11,6 @@ namespace F5ForceSave
     {
         internal const string ConfigKey = "load_key";
         internal const string OptionId = "load_key";
-        private const string Section = "按键 / Key / Клавиши";
         private static ConfigEntry<string> entry;
 
         internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F8;
@@ -19,7 +18,7 @@ namespace F5ForceSave
         internal static void Load()
         {
             ModConfig config = ModHelper.GetConfig(F5ForceSaveMod.ModId);
-            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F8.ToString(), Section, Text.LoadKeySettingLabel, SaveKey.Choices(), Text.KeySettingTooltip);
+            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F8.ToString(), Text.KeySectionLabel(), Text.LoadKeySettingLabel, SaveKey.Choices(), Text.KeySettingTooltip);
             Apply(entry.Value);
             entry.OnChanged += name =>
             {
@@ -73,7 +72,6 @@ namespace F5ForceSave
     {
         internal const string ConfigKey = "f5_load_key";
         internal const string OptionId = "f5_load_key";
-        private const string Section = "按键 / Key / Клавиши";
         private static ConfigEntry<string> entry;
 
         internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F7;
@@ -81,7 +79,7 @@ namespace F5ForceSave
         internal static void Load()
         {
             ModConfig config = ModHelper.GetConfig(F5ForceSaveMod.ModId);
-            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F7.ToString(), Section, Text.F5LoadKeySettingLabel, SaveKey.Choices(), Text.KeySettingTooltip);
+            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F7.ToString(), Text.KeySectionLabel(), Text.F5LoadKeySettingLabel, SaveKey.Choices(), Text.KeySettingTooltip);
             Apply(entry.Value);
             entry.OnChanged += name =>
             {

@@ -43,6 +43,14 @@ namespace F5ForceSave
             {
                 UnityEngine.Debug.LogWarning(LogPrefix + "reading the F5 save load key from the mod settings failed; the key is F7: " + e);
             }
+            try
+            {
+                SaveSettings.Load();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(LogPrefix + "reading the save history settings failed; original limits and copying apply: " + e);
+            }
         }
 
         public void OnEnable()
@@ -171,7 +179,6 @@ namespace F5ForceSave
     {
         internal const string ConfigKey = "save_key";
         internal const string OptionId = "save_key";
-        private const string Section = "按键 / Key / Клавиши";
         private static ConfigEntry<string> entry;
 
         internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F5;
@@ -179,7 +186,7 @@ namespace F5ForceSave
         internal static void Load()
         {
             ModConfig config = ModHelper.GetConfig(F5ForceSaveMod.ModId);
-            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F5.ToString(), Section, Text.KeySettingLabel, Choices(), Text.KeySettingTooltip);
+            entry = config.Define(ConfigKey, UnityEngine.KeyCode.F5.ToString(), Text.KeySectionLabel(), Text.KeySettingLabel, Choices(), Text.KeySettingTooltip);
             Apply(entry.Value);
             entry.OnChanged += name =>
             {
@@ -1023,6 +1030,11 @@ namespace F5ForceSave
         }
 
         // The entry in this mod's settings window in the Mods panel.
+        internal static string KeySectionLabel()
+        {
+            return LocHelper.GetLocalizedOrDefault("MainMenu", "option_keybind", "按键");
+        }
+
         internal static string KeySettingLabel()
         {
             return T("存档键", "Save key", "Клавиша сохранения");
