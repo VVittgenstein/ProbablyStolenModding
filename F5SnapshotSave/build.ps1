@@ -67,12 +67,22 @@ try {
         }
     }
     else {
-        foreach ($id in 'GunsmithExpansion','Moneylending','KeptShotgun','CorpPresence') {
+        foreach ($id in 'GunsmithExpansion','Moneylending','KeptShotgun','CorpPresence','Pen_mod_pipette') {
             $path = Join-Path $GameDir "Mods\$id\$id.dll"
             if (Test-Path -LiteralPath $path) { $schemaAssemblies += $path }
         }
         $corp = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3828913695\CorpPresence.dll'
         if (Test-Path -LiteralPath $corp) { $schemaAssemblies += $corp }
+        $pipette = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3829409725\Pen_mod_pipette.dll'
+        if (Test-Path -LiteralPath $pipette) { $schemaAssemblies += $pipette }
+        # This integration's manifest ID and DLL basename differ.
+        foreach ($path in @(
+            (Join-Path $GameDir 'Mods\vanilla_gun_expansion\VanillaGunExpansion.dll'),
+            (Join-Path $GameDir 'Mods\VanillaGunExpansion\VanillaGunExpansion.dll'),
+            (Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3834135415\VanillaGunExpansion.dll')
+        )) {
+            if (Test-Path -LiteralPath $path) { $schemaAssemblies += $path }
+        }
     }
     & (Join-Path $PSScriptRoot 'tools\generate_snapshot_schema.ps1') -GameDir $GameDir -Out (Join-Path $OutDir 'Data\snapshot-schema.json') -ModAssemblies $schemaAssemblies
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $OutDir "$modName.dll")).Hash

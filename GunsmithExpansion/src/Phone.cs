@@ -583,129 +583,66 @@ namespace GunsmithExpansion
 
         // The game's phone dialogue has 3 choice bubbles; for the catalog more are copied from the last one when the
         // call starts. A bubble selects the choice of its own index (DialogChoiceBubble.index), and Unity points the
-        // copy's click listener at the copy. PhoneChoiceLayoutPatch stacks the shown bubbles upwards from the place of
-        // the game's lowest one, which keeps the game's own calls as they were. From game 1.0.0.12 the option "Dialogue
-        // bubble size" scales the bubbles (DialogBubbleScaler, set up in DialoguePhoneUIManager.Start with the game's 3 only):
-        // the copies take the scale of the game's last bubble, and the places are taken at the scale of the game's first one
-        // (placesScale), so that they follow it when the option changes (PhoneBubbleScalePatch).
+        // copy's click listener at the copy. PhoneChoices measures the available game area,
+        // wraps labels and paginates for the selected native bubble scale. Other phone calls
+        // regain the game's original three positions and heights.
         internal const int ChoiceBubbles = 8;
-        private static List<Vector2> bubblePlaces;
-        private static float placesScale;
-        private static readonly Dictionary<DialogChoiceBubble, float> choiceHeights = new Dictionary<DialogChoiceBubble, float>();
-        private static readonly HashSet<Dialogue> menuPages = new HashSet<Dialogue>();
+        private sealed class MenuView
+        {
+            internal Menu Menu, Root;
+            internal int Start, Count;
+        }
+        private static readonly Dictionary<Dialogue, MenuView> menuPages = new Dictionary<Dialogue, MenuView>();
 
         internal static int EnsureChoiceBubbles()
         {
-            DialoguePhoneUIManager ui = DialoguePhoneUIManager.Instance;
-            if (ui == null || ui.dialogChoiceBubbles == null || ui.dialogChoiceBubbles.Count < 2)
-                return ui != null && ui.dialogChoiceBubbles != null ? ui.dialogChoiceBubbles.Count : 0;
-            List<DialogChoiceBubble> bubbles = ui.dialogChoiceBubbles;
-            if (bubblePlaces == null || bubbles.Count < ChoiceBubbles)
-            {
-                bubblePlaces = new List<Vector2>();
-                foreach (DialogChoiceBubble b in bubbles)
-                    bubblePlaces.Add(((RectTransform)b.transform).anchoredPosition);
-                placesScale = bubbles[0].transform.localScale.x;
-                choiceHeights.Clear();
-            }
-            DialogChoiceBubble last = bubbles[bubbles.Count - 1];
-            while (bubbles.Count < ChoiceBubbles)
-            {
-                GameObject copy = UnityEngine.Object.Instantiate(last.gameObject, last.transform.parent);
-                DialogChoiceBubble bubble = copy.GetComponent<DialogChoiceBubble>();
-                bubble.index = bubbles.Count;
-                copy.SetActive(false);
-                bubbles.Add(bubble);
-            }
-            foreach (DialogChoiceBubble bubble in bubbles)
-                if (!choiceHeights.ContainsKey(bubble))
-                    choiceHeights[bubble] = ((RectTransform)bubble.transform).rect.height;
-            return bubbles.Count;
+            return PhoneChoices.Ensure();
         }
 
-        // With a layout group on the bubbles' parent the group places them; otherwise the shown ones are stacked
-        // upwards by the step between the game's first two bubbles, the last one at the game's last place.
+        // Also retained as the entry point used by the existing phone layout harnesses.
         internal static void ArrangeChoiceBubbles(DialoguePhoneUIManager ui)
         {
-            if (ui == null || ui.currentDialog == null || bubblePlaces == null || bubblePlaces.Count < 3 || ui.dialogChoiceBubbles.Count <= 3)
-                return;
-            Transform parent = ui.dialogChoiceBubbles[0].transform.parent;
-            if (parent != null && parent.GetComponent<UnityEngine.UI.LayoutGroup>() != null)
-                return;
-            int shown = Math.Min(ui.currentDialog.choices.Count, ui.dialogChoiceBubbles.Count);
-            List<DialogChoiceBubble> all = ui.dialogChoiceBubbles;
-            int originals = Math.Min(bubblePlaces.Count, all.Count);
-            Vector3 scale = all[originals - 1].transform.localScale;
-            for (int i = originals; i < all.Count; i++)
-                all[i].transform.localScale = scale;
-            float r = placesScale > 0f ? all[0].transform.localScale.x / placesScale : 1f;
-            Vector2 step = (bubblePlaces[1] - bubblePlaces[0]) * r;
-            Vector2 bottom = bubblePlaces[0] + (bubblePlaces[2] - bubblePlaces[0]) * r;
-            for (int i = 0; i < ui.dialogChoiceBubbles.Count; i++)
-            {
-                Vector2 place = i < shown ? bottom + step * (i - (shown - 1)) : bottom;
-                RectTransform rect = (RectTransform)all[i].transform;
-                rect.anchoredPosition = place;
-                float originalHeight;
-                if (choiceHeights.TryGetValue(all[i], out originalHeight))
-                    rect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, originalHeight);
-            }
-            if (!menuPages.Contains(ui.currentDialog))
-                return;
-
-            // T-008: the full repair-pack name is wider than the screen in Russian. Keep the game's font and
-            // automatic horizontal sizing; explicit word breaks give the layout group a bounded preferred width.
-            // Increase each affected bubble's height and lift the rows above it so prices remain visible.
-            float lift = 0f;
-            var corners = new Vector3[4];
-            for (int i = shown - 1; i >= 0; i--)
-            {
-                DialogChoiceBubble bubble = all[i];
-                RectTransform rect = (RectTransform)bubble.transform;
-                rect.GetWorldCorners(corners);
-                float screenScale = Mathf.Abs(rect.lossyScale.x);
-                var group = bubble.GetComponent<UnityEngine.UI.HorizontalLayoutGroup>();
-                string text = ui.currentDialog.choices[i].Item2.plainText;
-                if (bubble.TMP != null && group != null && screenScale > 0f && text != null)
-                {
-                    float width = Mathf.Max(40f, (Screen.width - corners[0].x - 24f) / screenScale - group.padding.horizontal);
-                    string wrapped = WrapChoice(bubble.TMP, text, width);
-                    bubble.TMP.text = wrapped;
-                    float extra = Mathf.Max(0f, bubble.TMP.GetPreferredValues(wrapped, float.PositiveInfinity, float.PositiveInfinity).y
-                        - bubble.TMP.GetPreferredValues(text, float.PositiveInfinity, float.PositiveInfinity).y);
-                    float originalHeight;
-                    if (choiceHeights.TryGetValue(bubble, out originalHeight))
-                        rect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, originalHeight + extra);
-                    lift += extra * bubble.transform.localScale.y;
-                }
-                Vector2 place = rect.anchoredPosition;
-                rect.anchoredPosition = new Vector2(place.x, place.y + lift);
-                UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
-            }
+            PhoneChoices.Arrange(ui);
         }
 
-        private static string WrapChoice(TMPro.TMP_Text label, string text, float width)
+        internal static bool IsMenuPage(Dialogue page)
         {
-            if (label.GetPreferredValues(text, float.PositiveInfinity, float.PositiveInfinity).x <= width)
-                return text;
-            var lines = new List<string>();
-            foreach (string paragraph in text.Split('\n'))
+            return page != null && menuPages.ContainsKey(page);
+        }
+
+        internal static void PrepareChoicePage(Dialogue page)
+        {
+            MenuView view;
+            if (page == null || !menuPages.TryGetValue(page, out view)) return;
+            int count = PhoneChoices.PageCapacity(MenuLabels(view.Menu, view.Start));
+            if (count == view.Count) return;
+            foreach (var choice in page.choices)
+                if (choice.Item1 != null) choice.Item1.Destroy();
+            page.choices.Clear();
+            ShowMenu(page, view.Menu, view.Root, view.Start);
+        }
+
+        private static string ItemChoiceLabel(string id)
+        {
+            Pack pack = FindPack(id);
+            string itemName;
+            if (pack != null) itemName = PackName(pack);
+            else
             {
-                string line = "";
-                foreach (string word in paragraph.Split(' '))
-                {
-                    string next = line.Length == 0 ? word : line + " " + word;
-                    if (line.Length > 0 && label.GetPreferredValues(next, float.PositiveInfinity, float.PositiveInfinity).x > width)
-                    {
-                        lines.Add(line);
-                        line = word;
-                    }
-                    else
-                        line = next;
-                }
-                lines.Add(line);
+                GameItem blueprint = DirectoryMaster.Item(id, false);
+                itemName = blueprint != null ? blueprint.name : id;
+                if (blueprint != null) blueprint.Destroy();
             }
-            return string.Join("\n", lines.ToArray());
+            return string.Format(Text.Pick("{0}，{1} 信用点。", "{0}, {1} credits."), itemName, Price(id));
+        }
+
+        private static List<string> MenuLabels(Menu menu, int start)
+        {
+            var labels = new List<string>();
+            int count = menu.Children.Count > 0 ? menu.Children.Count : menu.Items.Count;
+            for (int i = start; i < count && i < start + ChoiceBubbles - 2; i++)
+                labels.Add(menu.Children.Count > 0 ? menu.Children[i].Label + Text.Pick("。", ".") : ItemChoiceLabel(menu.Items[i]));
+            return labels;
         }
 
         // The call: a greeting with the week's remaining orders, then the catalog's groups. A group of groups offers one
@@ -731,9 +668,10 @@ namespace GunsmithExpansion
 
         private static void ShowMenu(Dialogue page, Menu menu, Menu root, int start)
         {
-            menuPages.Add(page);
             string name = Name();
-            int perPage = Math.Max(1, EnsureChoiceBubbles() - 2);
+            EnsureChoiceBubbles();
+            int perPage = PhoneChoices.PageCapacity(MenuLabels(menu, start));
+            menuPages[page] = new MenuView { Menu = menu, Root = root, Start = start, Count = perPage };
             if (menu.Children.Count > 0)
             {
                 for (int i = start; i < menu.Children.Count && i < start + perPage; i++)
@@ -756,20 +694,8 @@ namespace GunsmithExpansion
             {
                 string id = catalog[i];
                 Pack pack = FindPack(id);
-                string itemName;
-                if (pack != null)
-                {
-                    itemName = PackName(pack);
-                }
-                else
-                {
-                    GameItem blueprint = DirectoryMaster.Item(id, false);
-                    itemName = blueprint != null ? blueprint.name : id;
-                    if (blueprint != null)
-                        blueprint.Destroy();
-                }
                 int price = Price(id);
-                Dialogue pick = new Dialogue().SetText("PLAYER", string.Format(Text.Pick("{0}，{1} 信用点。", "{0}, {1} credits."), itemName, price));
+                Dialogue pick = new Dialogue().SetText("PLAYER", ItemChoiceLabel(id));
                 page.AddChoice(DirectoryMaster.Item("$", true), "", "", pick, () =>
                 {
                     bool placed = PlaceOrder(id);
@@ -787,13 +713,13 @@ namespace GunsmithExpansion
         {
             string name = Name();
             int next = start + perPage;
-            int pages = (count + perPage - 1) / perPage;
             Dialogue more = new Dialogue().SetText("PLAYER", Text.Pick("还有别的吗？", "What else have you got?"));
             page.AddChoice(DirectoryMaster.Item("$", true), "", "", more, () =>
             {
                 if (next < count)
                 {
-                    Dialogue nextPage = more.NextDialogue().SetText(name, string.Format(Text.Pick("还有这些（{0}/{1}）。", "There's also these ({0}/{1})."), next / perPage + 1, pages));
+                    // Page length can change with resolution, scale and label wrapping.
+                    Dialogue nextPage = more.NextDialogue().SetText(name, Text.Pick("有这些。", "I've got these."));
                     ShowMenu(nextPage, menu, root, next);
                 }
                 else
@@ -824,6 +750,15 @@ namespace GunsmithExpansion
     [HarmonyPatch(typeof(DialoguePhoneUIManager), nameof(DialoguePhoneUIManager.DisplayChoice))]
     internal static class PhoneChoiceLayoutPatch
     {
+        private static void Prefix(DialoguePhoneUIManager __instance)
+        {
+            if (Phone.IsMenuPage(__instance.currentDialog))
+            {
+                Phone.EnsureChoiceBubbles();
+                Phone.PrepareChoicePage(__instance.currentDialog);
+                __instance.HideChoiceBubble();
+            }
+        }
         private static void Postfix(DialoguePhoneUIManager __instance)
         {
             Phone.ArrangeChoiceBubbles(__instance);
@@ -838,7 +773,7 @@ namespace GunsmithExpansion
         private static void Postfix()
         {
             if (DialoguePhoneUIManager.Instance != null)
-                Phone.ArrangeChoiceBubbles(DialoguePhoneUIManager.Instance);
+                PhoneChoices.Refresh(DialoguePhoneUIManager.Instance);
         }
     }
 

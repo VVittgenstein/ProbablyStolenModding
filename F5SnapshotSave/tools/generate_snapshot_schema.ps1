@@ -9,12 +9,21 @@ $managed = Join-Path $GameDir 'Probably Stolen_Data\Managed'
 Add-Type -Path (Join-Path $managed 'Unity.Burst.Cecil.dll')
 $files = @((Join-Path $managed 'Assembly-CSharp.dll')) + $ModAssemblies
 if ($ModAssemblies.Count -eq 0) {
-    foreach ($id in 'F5SnapshotSave','GunsmithExpansion','Moneylending','KeptShotgun') {
+    foreach ($id in 'F5SnapshotSave','GunsmithExpansion','Moneylending','KeptShotgun','Pen_mod_pipette') {
         $path = Join-Path $GameDir "Mods\$id\$id.dll"
         if (Test-Path -LiteralPath $path) { $files += $path }
     }
     $corp = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3828913695\CorpPresence.dll'
     if (Test-Path -LiteralPath $corp) { $files += $corp }
+    $pipette = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3829409725\Pen_mod_pipette.dll'
+    if (Test-Path -LiteralPath $pipette) { $files += $pipette }
+    foreach ($path in @(
+        (Join-Path $GameDir 'Mods\vanilla_gun_expansion\VanillaGunExpansion.dll'),
+        (Join-Path $GameDir 'Mods\VanillaGunExpansion\VanillaGunExpansion.dll'),
+        (Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3834135415\VanillaGunExpansion.dll')
+    )) {
+        if (Test-Path -LiteralPath $path) { $files += $path }
+    }
 }
 $modules = [ordered]@{}
 $fields = [ordered]@{}

@@ -4,7 +4,7 @@ using System.Globalization;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5ForceSave")]
-[assembly: System.Reflection.AssemblyVersion("1.6.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.3.0")]
 
 namespace F5ForceSave
 {
@@ -657,6 +657,7 @@ namespace F5ForceSave
         private static Exception Finalizer(Exception __exception)
         {
             SaveExtras.SkipMorningReport = false;
+            if (__exception == null) MorningReport.RestoreDisplay();
             return __exception;
         }
     }

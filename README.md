@@ -6,9 +6,9 @@ Seven complete mod build projects for [Probably Stolen](https://store.steampower
 
 | Project | Version | Function | Steam Workshop |
 |---|---|---|---|
-| [F5ForceSave](F5ForceSave/) | 1.6.2 | F5 quick save / F5 存档 | [3828962908](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962908) |
-| [F5SnapshotSave](F5SnapshotSave/) | 0.5.4 | F5 quick save with more runtime state / F5 存档加强版 | [3831061477](https://steamcommunity.com/sharedfiles/filedetails/?id=3831061477) |
-| [GunsmithExpansion](GunsmithExpansion/) | 0.7.3 | Gunsmith expansion / 枪匠拓展 | [3833272785](https://steamcommunity.com/sharedfiles/filedetails/?id=3833272785) |
+| [F5ForceSave](F5ForceSave/) | 1.6.3 | F5 quick save / F5 存档 | [3828962908](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962908) |
+| [F5SnapshotSave](F5SnapshotSave/) | 0.5.5 | F5 quick save with more runtime state / F5 存档加强版 | [3831061477](https://steamcommunity.com/sharedfiles/filedetails/?id=3831061477) |
+| [GunsmithExpansion](GunsmithExpansion/) | 0.7.4 | Gunsmith expansion / 枪匠拓展 | [3833272785](https://steamcommunity.com/sharedfiles/filedetails/?id=3833272785) |
 | [GunsmithExpansion2077](GunsmithExpansion2077/) | 0.7.1 | Four additional guns for Gunsmith Expansion / 枪匠拓展 2077 附加包 | [3836151420](https://steamcommunity.com/sharedfiles/filedetails/?id=3836151420) |
 | [KeptShotgun](KeptShotgun/) | 1.1.2 | Armed robbery and intimidation / 持枪抢劫与威胁议价 | [3830273949](https://steamcommunity.com/sharedfiles/filedetails/?id=3830273949) |
 | [MentorNoteAutoFile](MentorNoteAutoFile/) | 1.1.1 | Automatically file mentor notes / 导师笔记自动收进手册 | [3828962954](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962954) |
@@ -78,6 +78,14 @@ pwsh -File ./build-mods.ps1 -GameDir 'E:\SteamLibrary\steamapps\common\Probably 
 The individual F5SnapshotSave build script accepts `-IntegrationAssemblies` for explicit DLL paths; when omitted, it discovers supported integrations in the game installation. Rebuild the schema for the integration versions present when taking or restoring a snapshot.
 
 单独构建加强版时，可用 `-IntegrationAssemblies` 指定 DLL 路径；省略时自动查找游戏目录中支持的联动。保存和恢复快照时使用的联动版本应与生成字段表时一致。
+
+For Pen's Pipette, also pass `-PenPipetteDll 'C:\Path\Pen_mod_pipette.dll'` to the aggregate build. Version 1.1.3 is the integration target for this update. Third-party DLLs are supplied locally and are not bundled with the source project.
+
+需要与 Pen 的移液枪联动时，总构建另传 `-PenPipetteDll 'C:\Path\Pen_mod_pipette.dll'`。本次更新的适配对象为 1.1.3。第三方 DLL 由本地提供，源码工程不附带这些 DLL。
+
+For Vanilla Gun Expansion 0.3.7, pass `-VanillaGunExpansionDll 'C:\Path\VanillaGunExpansion.dll'` to include its dialogue callback fields in the Plus schema.
+
+需要与原版枪械拓展0.3.7联动时，另传 `-VanillaGunExpansionDll 'C:\Path\VanillaGunExpansion.dll'`，将其顾客对话回调字段纳入加强版字段表。
 
 Both F5 mods declare `files` for save-history access through the game's `SaveFiles` API. The mod code accesses the game's saves and history. See the [official modding guide](https://github.com/dragonpan2/probably-stolen-modding/blob/main/ModdingGuide.zh-CN.md) for capability and Workshop verification requirements.
 

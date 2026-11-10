@@ -8,12 +8,20 @@
 .PARAMETER CorpPresenceDll
     Optional CorpPresence.dll to include in the F5 Quick Save Plus snapshot schema.
     Use the exact version you intend to run with the generated mods.
+.PARAMETER PenPipetteDll
+    Optional Pen_mod_pipette.dll to include in the F5 Quick Save Plus snapshot schema.
+    Use the exact version you intend to run with the generated mods.
+.PARAMETER VanillaGunExpansionDll
+    Optional VanillaGunExpansion.dll to include in the F5 Quick Save Plus snapshot schema.
+    Use the exact version you intend to run with the generated mods.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$GameDir,
     [string]$OutDir = (Join-Path ([IO.Path]::GetTempPath()) ('ProbablyStolenMods-' + [Guid]::NewGuid().ToString('N'))),
-    [string]$CorpPresenceDll
+    [string]$CorpPresenceDll,
+    [string]$PenPipetteDll,
+    [string]$VanillaGunExpansionDll
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +43,12 @@ $integrations = @()
 if ($CorpPresenceDll) {
     $CorpPresenceDll = (Resolve-Path -LiteralPath $CorpPresenceDll -ErrorAction Stop).Path
 }
+if ($PenPipetteDll) {
+    $PenPipetteDll = (Resolve-Path -LiteralPath $PenPipetteDll -ErrorAction Stop).Path
+}
+if ($VanillaGunExpansionDll) {
+    $VanillaGunExpansionDll = (Resolve-Path -LiteralPath $VanillaGunExpansionDll -ErrorAction Stop).Path
+}
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
 # Build integration DLLs before generating the Plus schema. No installed copy of these mods is required.
@@ -47,6 +61,8 @@ foreach ($mod in 'GunsmithExpansion', 'Moneylending', 'KeptShotgun') {
     $integrations += Join-Path $OutDir "$mod\$mod.dll"
 }
 if ($CorpPresenceDll) { $integrations += $CorpPresenceDll }
+if ($PenPipetteDll) { $integrations += $PenPipetteDll }
+if ($VanillaGunExpansionDll) { $integrations += $VanillaGunExpansionDll }
 & (Join-Path $PSScriptRoot 'F5SnapshotSave\build.ps1') -GameDir $GameDir `
     -OutDir (Join-Path $OutDir 'F5SnapshotSave') -IntegrationAssemblies $integrations
 

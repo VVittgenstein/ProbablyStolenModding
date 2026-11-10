@@ -483,11 +483,10 @@ namespace GunsmithExpansion
         }
     }
 
-    // The display case's customer types are ranked by the value of its items (ShowcaseHelper.GetDisplayCaseType calls
-    // this with the display case's items); the guns in its cabinets are added to that list. GameGridInventory.childItems
-    // builds a new list on every call, so the list is told by where its items are. Until 0.6.2 it was compared by
-    // reference, which never matched, so a cabinet in the display case drew no gun customers (VVittgenstein 2026-11-05 13:05,
-    // current/008 quote 3 point 5).
+    // ShowcaseHelper.GetDisplayCaseType ranks the display case's items through this method. Advertising mods may
+    // add wall-mounted signs from another inventory to that list. Expand each included cabinet that is physically
+    // in the display case; unrelated entries must not prevent its guns from contributing. Keep the caller's list
+    // intact and do not add guns already included by another integration.
     [HarmonyPatch(typeof(PlayerStore), nameof(PlayerStore.GetTypesByValue))]
     internal static class CabinetTypesByValuePatch
     {
@@ -496,14 +495,22 @@ namespace GunsmithExpansion
             if (items == null || items.Count == 0 || EmporiumEntry.Instance == null || EmporiumEntry.Instance.showcaseElement == null)
                 return;
             GameInventory showcase = EmporiumEntry.Instance.showcaseElement;
-            if (!items.TrueForAll(i => i != null && ReferenceEquals(i.parentInventory, showcase)))
-                return;
-            List<GameItem> guns = Cabinets.DisplayedGuns();
-            if (guns.Count == 0)
-                return;
-            var all = new List<GameItem>(items);
-            all.AddRange(guns);
-            items = all;
+            List<GameItem> expanded = null;
+            foreach (GameItem item in items)
+            {
+                if (!Cabinets.IsCabinet(item) || !ReferenceEquals(item.parentInventory, showcase))
+                    continue;
+                foreach (GameItem gun in GraphUtils.FindAllChildrenType<GameItem>(item, Cabinets.IsGun, g => !Cabinets.IsGun(g)))
+                {
+                    if ((expanded ?? items).Exists(existing => ReferenceEquals(existing, gun)))
+                        continue;
+                    if (expanded == null)
+                        expanded = new List<GameItem>(items);
+                    expanded.Add(gun);
+                }
+            }
+            if (expanded != null)
+                items = expanded;
         }
     }
 

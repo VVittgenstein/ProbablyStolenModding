@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.5.4.0")]
+[assembly: System.Reflection.AssemblyVersion("0.5.5.0")]
 
 namespace F5SnapshotSave
 {
@@ -674,6 +674,7 @@ namespace F5SnapshotSave
         private static Exception Finalizer(Exception __exception)
         {
             Restore.SkipMorningReport = false;
+            if (__exception == null) MorningReport.RestoreDisplay();
             return __exception;
         }
     }

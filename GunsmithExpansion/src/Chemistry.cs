@@ -176,6 +176,23 @@ namespace GunsmithExpansion
         }
     }
 
+    // These three drug buyers accept anything with chemical purity at their minimum grade.
+    // Propellant uses that same purity system for reloading, but is not a drug. Apply the
+    // exclusion at the final item filter so customers restored from a snapshot also use it.
+    // WillAcceptNarcotic also runs for general merchants, so changing it would block those sales.
+    [HarmonyPatch(typeof(StoreClient), nameof(StoreClient.IsClientBuyingThisItem), new[] { typeof(GameItem), typeof(bool) })]
+    internal static class PropellantDrugBuyerPatch
+    {
+        private static void Postfix(StoreClient __instance, GameItem gameItem, ref bool __result)
+        {
+            if (!__result || gameItem == null || !gameItem.IsID(Reloader.PropellantId))
+                return;
+            string id = __instance.identifier;
+            if (id == "desperateAddict" || id == "wornOutSpacer" || id == "upperLevelHedonist")
+                __result = false;
+        }
+    }
+
     [HarmonyPatch(typeof(ChemicalHelper), nameof(ChemicalHelper.HandleTemperatureReaction))]
     internal static class NitrationPatch
     {
