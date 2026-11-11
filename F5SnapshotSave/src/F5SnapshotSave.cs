@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.6.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.7.0.0")]
 
 namespace F5SnapshotSave
 {
@@ -43,6 +43,14 @@ namespace F5SnapshotSave
             catch (Exception e)
             {
                 UnityEngine.Debug.LogWarning(LogPrefix + "reading the F5 save load key from the mod settings failed; the key is F7: " + e);
+            }
+            try
+            {
+                SaveSettings.Load();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(LogPrefix + "reading the save history settings failed; original limits and copying apply: " + e);
             }
         }
 
@@ -159,9 +167,9 @@ namespace F5SnapshotSave
             // wait, so pressing either key there binds it without saving or loading.
             if (KeyBindHelper.SuppressHotkeys || UnityEngine.Time.unscaledTime < nextAllowedTime || QuickLoad.Pending)
                 return;
-            bool save = UnityEngine.Input.GetKeyDown(SaveKey.Current);
-            bool load = !save && UnityEngine.Input.GetKeyDown(LoadKey.Current);
-            bool loadF5 = !save && !load && UnityEngine.Input.GetKeyDown(F5LoadKey.Current);
+            bool save = SaveKey.Pressed();
+            bool load = !save && LoadKey.Pressed();
+            bool loadF5 = !save && !load && F5LoadKey.Pressed();
             if (!save && !load && !loadF5)
                 return;
             nextAllowedTime = UnityEngine.Time.unscaledTime + 1f;
@@ -325,7 +333,7 @@ namespace F5SnapshotSave
                 + (withCounter ? ", customer at the counter '" + store.currentClientInstance.GetClientBlueprint().identifier + "', conversation " + cap.DialogState : ""));
             if (SlotWritten)
             {
-                QuickHistory.RecordLatest(store.saveSlotId);
+                QuickHistory.RecordLatest(store.saveSlotId, SaveDetails.Make(store, station, cap.Waiting));
                 Report(ui, Text.Saved(station.dayCounter, store.storeState, DateTime.Now, withCounter, cap.Waiting), true);
             }
             else
@@ -473,6 +481,7 @@ namespace F5SnapshotSave
                     Snapshot.ClearKeys();
                     return;
                 }
+                MarkLoadedSave(store);
                 if (legacy.FrontCounterRestored)
                     PendingShowFrontArea = true;
                 if (store.storeState == PlayerStore.StoreState.OPEN)
@@ -531,6 +540,23 @@ namespace F5SnapshotSave
             catch (Exception e)
             {
                 UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "reading the F5 data failed: " + e);
+            }
+        }
+
+        // 0.7.0: the loaded save holds F5 data; its record in the save index gets the mark if it has none (QuickMark).
+        private static void MarkLoadedSave(PlayerStore store)
+        {
+            try
+            {
+                NewGameData data = NewGameData.Instance;
+                int slot = data != null ? data.saveSlot : store.saveSlotId;
+                string file = data != null ? data.saveFile : null;
+                if (QuickMark.EnsureMarked(slot, file))
+                    UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "marked the loaded F5 save as an F5 save in the save index: slot " + slot + ", " + (string.IsNullOrEmpty(file) ? "the slot file" : file));
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "marking the loaded F5 save in the save index failed: " + e);
             }
         }
     }

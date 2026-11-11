@@ -7,56 +7,74 @@ namespace F5ForceSave
     // F5 saves and the game's own saves (at the start of each day and for a new game) share the slot's history
     // (SaveFiles.LoadHistory). Before every save the game moves the slot file into the history (RotateIntoHistory)
     // and then keeps "Saved days per run" (EmporiumOption.SaveHistoryDays) saves in all, the slot file included,
-    // deleting the oldest history entries (TrimHistory). Here the two kinds are counted apart: up to SaveHistoryDays
-    // of each kind are kept, the slot file included, and the oldest of a kind is deleted.
-    // Which saves are F5 saves is recorded in the save index under IndexKey: the save time of each F5 save in whole
-    // seconds, as the slot preview (SavePreviewData.lastSaveDateTime) and the history entries
-    // (SaveHistoryEntry.saveDateTime) hold it. F5 Quick Save Plus (F5SnapshotSave) keeps the same record. On the Load
-    // Game screen the day and money of every save end with " | F5" or " | Auto".
+    // deleting the oldest history entries (TrimHistory). Here the two kinds are counted apart: the game's saves keep
+    // SaveHistoryDays places, the slot file included; the F5 saves keep the number set in this mod's settings
+    // (SaveSettings, by default also SaveHistoryDays, or no limit).
+    // 1.8.0 (from lin-and-tree's pull request #1, which first counted the kinds with their own limits): a new F5 save deletes
+    // at most the oldest F5 save, so F5 saves already kept are not deleted because the limit was lowered; the game's own saves
+    // and the listing of history files found on disk do not delete F5 saves.
+    // An F5 save is told by the mark in its save time (QuickMark). F5 saves made before 1.8.0 have no mark; for them the list
+    // of 1.4.0 to 1.7.0 under LegacyKey (the save times in whole seconds of the F5 saves of all slots) is read, and no longer
+    // written. Loading such a save puts the mark on its record (QuickMark.EnsureMarked). F5 Quick Save Plus (F5SnapshotSave)
+    // marks and counts in the same way. On the Load Game screen the day and money of every save end with " | F5" or
+    // " | Auto", and an F5 save made since 1.8.0 shows a second line (SaveDetails).
     internal static class QuickHistory
     {
-        internal const string IndexKey = "f5_quick_saves";
-        private const int MaxRecorded = 400;
+        internal const string LegacyKey = "f5_quick_saves";
 
         private static bool trimming;
-        private static bool quickInProgress;
+        private static bool newQuickSave;
+        private static bool latestIsAuto;
         private static readonly Queue<DateTime> pendingLabels = new Queue<DateTime>();
-        private static HashSet<long> labelMarks;
+        private static HashSet<long> labelLegacy;
+        private static Dictionary<long, SaveDetails.Record> labelDetails;
 
-        // F5 Quick Save Plus handles F5 and this record itself while it runs. Its object is named "F5SnapshotSave"
+        // F5 Quick Save Plus handles F5 and the save history itself while it runs. Its object is named "F5SnapshotSave"
         // only then; it renames the object when it cannot run alongside this mod.
         internal static bool HandledByPlus()
         {
             return UnityEngine.GameObject.Find("F5SnapshotSave") != null;
         }
 
+        // True when this mod handles F5 saves and the save history.
+        internal static bool Handles()
+        {
+            return !HandledByPlus();
+        }
+
         internal static void BeginRotation(bool quick)
         {
-            trimming = !HandledByPlus();
-            quickInProgress = quick;
+            trimming = Handles();
+            newQuickSave = quick;
+            latestIsAuto = !quick;
         }
 
         internal static void EndRotation()
         {
             trimming = false;
-            quickInProgress = false;
+            newQuickSave = false;
+            latestIsAuto = false;
         }
 
         // SaveFiles.RestoreHistoryFromDisk (the game 1.0.0.12): the slot file is already in place and takes one place of
-        // its kind, as the save being made does in RotateIntoHistory.
+        // its kind, as the save being made does in RotateIntoHistory; a slot file whose kind is not known (a record in whole
+        // seconds, RebuiltPreviewPatch) takes none. No save is being made, so no F5 save is deleted.
         internal static void BeginRestore(int slotId)
         {
-            bool quick = false;
+            bool auto = false;
             try
             {
                 SavePreviewData preview = SaveFiles.IndexLoad<SavePreviewData>("preview_" + slotId, null);
-                quick = preview != null && IsQuick(preview.lastSaveDateTime);
+                HashSet<long> legacy = LoadLegacy();
+                auto = preview != null && !IsQuick(preview.lastSaveDateTime, legacy) && !IsRelisted(preview.lastSaveDateTime, legacy);
             }
             catch (Exception e)
             {
-                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "reading the slot file of slot " + slotId + " before listing its history failed; it counts as the game's save: " + e);
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "reading the slot file of slot " + slotId + " before listing its history failed; it takes no place: " + e);
             }
-            BeginRotation(quick);
+            trimming = Handles();
+            newQuickSave = false;
+            latestIsAuto = auto;
         }
 
         // SaveFiles.TrimHistory as RotateIntoHistory calls it: history holds the entries newest first (the slot file
@@ -69,42 +87,22 @@ namespace F5ForceSave
             try
             {
                 int perKind = Math.Max(1, keepCount + 1);
-                HashSet<long> marks = Load();
-                // The save being made becomes the slot file and takes one place of its kind.
-                int quickRoom = quickInProgress ? perKind - 1 : perKind;
-                int autoRoom = quickInProgress ? perKind : perKind - 1;
-                var keep = new List<SaveHistoryEntry>();
-                var drop = new List<SaveHistoryEntry>();
-                foreach (SaveHistoryEntry entry in history)
-                {
-                    bool quick = entry != null && marks.Contains(Key(entry.saveDateTime));
-                    if (quick ? quickRoom > 0 : autoRoom > 0)
-                    {
-                        keep.Add(entry);
-                        if (quick)
-                            quickRoom--;
-                        else
-                            autoRoom--;
-                    }
-                    else
-                        drop.Add(entry);
-                }
-                history.Clear();
-                history.AddRange(keep);
-                history.AddRange(drop);
-                keepCount = keep.Count;
-                if (drop.Count == 0)
+                HashSet<long> legacy = LoadLegacy();
+                int quickLimit = SaveSettings.LimitManual ? SaveSettings.ManualLimit : 0;
+                keepCount = OrderForRetention(history, latestIsAuto, newQuickSave, perKind, quickLimit,
+                    entry => entry != null && IsQuick(entry.saveDateTime, legacy),
+                    entry => entry != null && IsRelisted(entry.saveDateTime, legacy));
+                if (history.Count == keepCount)
                     return;
                 var names = new List<string>();
-                foreach (SaveHistoryEntry entry in drop)
+                foreach (SaveHistoryEntry entry in history.GetRange(keepCount, history.Count - keepCount))
                 {
-                    if (entry == null)
-                        continue;
-                    names.Add(entry.file);
-                    marks.Remove(Key(entry.saveDateTime));
+                    if (entry != null)
+                        names.Add(entry.file);
                 }
-                Save(marks);
-                UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "save history: up to " + perKind + " of each kind kept; removed " + string.Join(", ", names.ToArray()));
+                UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "save history: " + perKind + " of the game's saves kept, F5 saves "
+                    + (quickLimit > 0 ? "limited to " + quickLimit.ToString(CultureInfo.InvariantCulture) : "not limited")
+                    + "; removed " + string.Join(", ", names.ToArray()));
             }
             catch (Exception e)
             {
@@ -112,40 +110,85 @@ namespace F5ForceSave
             }
         }
 
-        // After an F5 save: the slot preview now holds the time of this save.
-        internal static void RecordLatest(int slotId)
+        // Puts the entries to keep first and returns their number; the game deletes the rest and saves the history index.
+        // history is newest first. latestIsAuto: the slot file (the save being made, or the slot file in place) is one of the
+        // game's saves and takes one of their places; an F5 save there takes a place of its own kind, and a slot file whose
+        // kind is not known takes none. newQuick: an F5 save is being made. quickLimit 0 means no limit. With more F5
+        // saves than the limit (the limit was lowered), a new F5 save deletes only the oldest one. isRelisted: an entry whose
+        // kind is not known (IsRelisted); it is kept and takes no place.
+        internal static int OrderForRetention(List<SaveHistoryEntry> history, bool latestIsAuto, bool newQuick, int autoLimit,
+            int quickLimit, Func<SaveHistoryEntry, bool> isQuick, Func<SaveHistoryEntry, bool> isRelisted)
+        {
+            var quick = new List<bool>(history.Count);
+            var relisted = new List<bool>(history.Count);
+            int quickCount = 0;
+            foreach (SaveHistoryEntry entry in history)
+            {
+                bool q = isQuick(entry);
+                quick.Add(q);
+                relisted.Add(!q && isRelisted(entry));
+                if (q)
+                    quickCount++;
+            }
+            int quickRoom = quickLimit > 0 && newQuick ? Math.Max(quickLimit - 1, quickCount - 1) : int.MaxValue;
+            int autoRoom = Math.Max(1, autoLimit) - (latestIsAuto ? 1 : 0);
+            var keep = new List<SaveHistoryEntry>();
+            var drop = new List<SaveHistoryEntry>();
+            for (int i = 0; i < history.Count; i++)
+            {
+                if (relisted[i])
+                    keep.Add(history[i]);
+                else if (quick[i] ? quickRoom > 0 : autoRoom > 0)
+                {
+                    keep.Add(history[i]);
+                    if (quick[i])
+                        quickRoom--;
+                    else
+                        autoRoom--;
+                }
+                else
+                    drop.Add(history[i]);
+            }
+            history.Clear();
+            history.AddRange(keep);
+            history.AddRange(drop);
+            return keep.Count;
+        }
+
+        // After an F5 save: the record of the slot holds the mark (QuickMarkPatch); its time is the key of the details shown on
+        // the Load Game screen.
+        internal static void RecordLatest(int slotId, SaveDetails.Record details)
         {
             try
             {
+                if (QuickMark.EnsureMarked(slotId, null))
+                    UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "the F5 save of slot " + slotId + " had no mark; it was added afterwards");
                 SavePreviewData preview = SaveFiles.IndexLoad<SavePreviewData>("preview_" + slotId, null);
                 if (preview == null || preview.lastSaveDateTime.Year <= 1)
                     return;
-                HashSet<long> marks = Load();
-                marks.Add(Key(preview.lastSaveDateTime));
-                Save(marks);
+                SaveDetails.Add(preview.lastSaveDateTime, details);
             }
             catch (Exception e)
             {
-                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "recording the F5 save failed; the Load Game screen shows it as Auto: " + e);
+                UnityEngine.Debug.LogWarning(F5ForceSaveMod.LogPrefix + "recording the details of the F5 save failed; the Load Game screen shows it without them: " + e);
             }
         }
 
         // The last F5 save of a slot. file is null when that is the slot file, otherwise the name of its history file;
-        // false when the slot has no recorded F5 save. SaveFiles.LoadHistory lists the entries whose files exist, newest
-        // first.
+        // false when the slot has no F5 save. SaveFiles.LoadHistory lists the entries whose files exist, newest first.
         internal static bool FindLastQuick(int slotId, out string file)
         {
             file = null;
-            HashSet<long> marks = Load();
+            HashSet<long> legacy = LoadLegacy();
             SavePreviewData preview = SaveUIManager.GetPreview(slotId);
-            if (preview != null && marks.Contains(Key(preview.lastSaveDateTime)))
+            if (preview != null && IsQuick(preview.lastSaveDateTime, legacy))
                 return true;
             List<SaveHistoryEntry> history = SaveFiles.LoadHistory(slotId);
             if (history == null)
                 return false;
             foreach (SaveHistoryEntry entry in history)
             {
-                if (entry != null && marks.Contains(Key(entry.saveDateTime)))
+                if (entry != null && IsQuick(entry.saveDateTime, legacy))
                 {
                     file = entry.file;
                     return true;
@@ -156,7 +199,24 @@ namespace F5ForceSave
 
         internal static bool IsQuick(DateTime saved)
         {
-            return Load().Contains(Key(saved));
+            return IsQuick(saved, LoadLegacy());
+        }
+
+        internal static bool IsQuick(DateTime saved, HashSet<long> legacy)
+        {
+            return QuickMark.Has(saved) || (legacy != null && legacy.Contains(Seconds(saved)));
+        }
+
+        // SaveFiles.ScanAndRegisterOrphans (the repair of the save index, and the Discover button of the Load Game screen)
+        // lists the history files of a slot that the save index does not hold (SaveFiles.RestoreHistoryFromDisk) with the
+        // time from the file name, in whole seconds, so an F5 save listed there has lost its mark; the record it makes from a
+        // slot file gets whole seconds as well (RebuiltPreviewPatch). Telling the kind of such a save would need reading the
+        // save file (the files capability). Such an entry, neither marked nor in the list of earlier versions, is kept: it
+        // takes no place of either kind, and no trimming deletes it. Loading it puts the mark back if it is an F5 save
+        // (QuickMark.EnsureMarked). The saves of the game never have whole seconds (QuickMark.Avoid).
+        internal static bool IsRelisted(DateTime saved, HashSet<long> legacy)
+        {
+            return saved.Ticks % TimeSpan.TicksPerSecond == 0 && !IsQuick(saved, legacy);
         }
 
         // LoadGameUI.Bind fills a slot plate with the newest save of the slot (its preview); LoadGameUI.BuildExpanded
@@ -165,7 +225,7 @@ namespace F5ForceSave
         internal static void BeginPlate(int index, List<int> slots)
         {
             EndLabels();
-            if (slots == null || index < 0 || index >= slots.Count || HandledByPlus())
+            if (slots == null || index < 0 || index >= slots.Count || !Handles())
                 return;
             SavePreviewData preview = SaveUIManager.GetPreview(slots[index]);
             if (preview != null)
@@ -175,7 +235,7 @@ namespace F5ForceSave
         internal static void BeginRows(List<SaveHistoryEntry> history)
         {
             EndLabels();
-            if (history == null || HandledByPlus())
+            if (history == null || !Handles())
                 return;
             foreach (SaveHistoryEntry entry in history)
                 pendingLabels.Enqueue(entry != null ? entry.saveDateTime : DateTime.MinValue);
@@ -184,7 +244,8 @@ namespace F5ForceSave
         internal static void EndLabels()
         {
             pendingLabels.Clear();
-            labelMarks = null;
+            labelLegacy = null;
+            labelDetails = null;
         }
 
         internal static string Label(string dayAndMoney)
@@ -194,9 +255,16 @@ namespace F5ForceSave
             DateTime saved = pendingLabels.Dequeue();
             try
             {
-                if (labelMarks == null)
-                    labelMarks = Load();
-                return dayAndMoney + Text.SaveKind(labelMarks.Contains(Key(saved)));
+                if (labelLegacy == null)
+                    labelLegacy = LoadLegacy();
+                bool quick = IsQuick(saved, labelLegacy);
+                string title = dayAndMoney + Text.SaveKind(quick);
+                if (!quick)
+                    return title;
+                if (labelDetails == null)
+                    labelDetails = SaveDetails.Load();
+                SaveDetails.Record details;
+                return labelDetails.TryGetValue(saved.Ticks, out details) ? SaveDetailsUi.Describe(title, details) : title;
             }
             catch (Exception)
             {
@@ -204,15 +272,15 @@ namespace F5ForceSave
             }
         }
 
-        private static long Key(DateTime time)
+        private static long Seconds(DateTime time)
         {
             return time.Ticks / TimeSpan.TicksPerSecond;
         }
 
-        private static HashSet<long> Load()
+        internal static HashSet<long> LoadLegacy()
         {
             var marks = new HashSet<long>();
-            string text = SaveFiles.IndexLoad<string>(IndexKey, "") ?? "";
+            string text = SaveFiles.IndexLoad<string>(LegacyKey, "") ?? "";
             foreach (string part in text.Split(','))
             {
                 long value;
@@ -220,19 +288,6 @@ namespace F5ForceSave
                     marks.Add(value);
             }
             return marks;
-        }
-
-        // The newest MaxRecorded times are kept; entries of deleted slots are not looked up.
-        private static void Save(HashSet<long> marks)
-        {
-            var times = new List<long>(marks);
-            times.Sort();
-            if (times.Count > MaxRecorded)
-                times.RemoveRange(0, times.Count - MaxRecorded);
-            var parts = new List<string>(times.Count);
-            foreach (long time in times)
-                parts.Add(time.ToString(CultureInfo.InvariantCulture));
-            SaveFiles.IndexSave<string>(IndexKey, string.Join(",", parts.ToArray()));
         }
     }
 }

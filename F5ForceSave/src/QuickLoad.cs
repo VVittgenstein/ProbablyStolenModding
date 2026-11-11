@@ -15,6 +15,8 @@ namespace F5ForceSave
         private static ConfigEntry<string> entry;
 
         internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F8;
+        // The modifier of a key combination (KeyModifier.cs).
+        internal static readonly ModifierSetting Modifier = new ModifierSetting("load_key_modifier", Text.LoadModifierSettingLabel, Text.LoadModifierOptionLabel);
 
         internal static void Load()
         {
@@ -28,6 +30,12 @@ namespace F5ForceSave
             };
             config.Save();
             UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "load key " + Current + " (" + config.FilePath + ", entry " + ConfigKey + ")");
+            Modifier.Load();
+        }
+
+        internal static bool Pressed()
+        {
+            return Modifier.Pressed(Current);
         }
 
         private static void Apply(string name)
@@ -57,11 +65,13 @@ namespace F5ForceSave
         {
             GameOptionRegistry.EnsureVanilla();
             ModHelper.AddGameOptionKeyBind(F5ForceSaveMod.ModId, GameOptionRegistry.SECTION_KEYBIND, OptionId, Text.LoadKeyOptionLabel, () => Current, Set);
+            Modifier.AddOption();
         }
 
         internal static void RemoveOption()
         {
             ModHelper.RemoveGameOption(F5ForceSaveMod.ModId, OptionId);
+            Modifier.RemoveOption();
         }
     }
 
@@ -77,6 +87,8 @@ namespace F5ForceSave
         private static ConfigEntry<string> entry;
 
         internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F7;
+        // The modifier of a key combination (KeyModifier.cs).
+        internal static readonly ModifierSetting Modifier = new ModifierSetting("f5_load_key_modifier", Text.F5LoadModifierSettingLabel, Text.F5LoadModifierOptionLabel);
 
         internal static void Load()
         {
@@ -90,6 +102,12 @@ namespace F5ForceSave
             };
             config.Save();
             UnityEngine.Debug.Log(F5ForceSaveMod.LogPrefix + "F5 save load key " + Current + " (" + config.FilePath + ", entry " + ConfigKey + ")");
+            Modifier.Load();
+        }
+
+        internal static bool Pressed()
+        {
+            return Modifier.Pressed(Current);
         }
 
         private static void Apply(string name)
@@ -116,7 +134,7 @@ namespace F5ForceSave
 
         internal static string Name()
         {
-            return KeyBindHelper.KeyName(Current);
+            return Modifier.Name(Current);
         }
 
         // Added after the load key row.
@@ -124,11 +142,13 @@ namespace F5ForceSave
         {
             GameOptionRegistry.EnsureVanilla();
             ModHelper.AddGameOptionKeyBind(F5ForceSaveMod.ModId, GameOptionRegistry.SECTION_KEYBIND, OptionId, Text.F5LoadKeyOptionLabel, () => Current, Set);
+            Modifier.AddOption();
         }
 
         internal static void RemoveOption()
         {
             ModHelper.RemoveGameOption(F5ForceSaveMod.ModId, OptionId);
+            Modifier.RemoveOption();
         }
     }
 

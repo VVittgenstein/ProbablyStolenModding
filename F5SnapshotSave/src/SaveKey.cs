@@ -18,6 +18,8 @@ namespace F5SnapshotSave
         private static ConfigEntry<string> entry;
 
         internal static UnityEngine.KeyCode Current = UnityEngine.KeyCode.F5;
+        // 0.7.0: the modifier of a key combination (KeyModifier.cs).
+        internal static readonly ModifierSetting Modifier = new ModifierSetting("save_key_modifier", Text.SaveModifierSettingLabel, Text.SaveModifierOptionLabel);
 
         internal static void Load()
         {
@@ -32,6 +34,7 @@ namespace F5SnapshotSave
             // Written at every start, so the file exists and shows the key in effect for players who edit it by hand.
             config.Save();
             UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "save key " + Current + " (" + config.FilePath + ", entry " + ConfigKey + ")");
+            Modifier.Load();
         }
 
         private static void Apply(string name)
@@ -92,10 +95,16 @@ namespace F5SnapshotSave
                 Current = key;
         }
 
-        // The game's name for the key, as the Key Binds rows show it (F5, Left Shift, Numpad 0).
+        // The game's name for the key, as the Key Binds rows show it (F5, Left Shift, Numpad 0), after the modifier
+        // (Ctrl+F5).
         internal static string Name()
         {
-            return KeyBindHelper.KeyName(Current);
+            return Modifier.Name(Current);
+        }
+
+        internal static bool Pressed()
+        {
+            return Modifier.Pressed(Current);
         }
 
         // The game's own options are registered first (GameOptionRegistry.EnsureVanilla, otherwise run when the
@@ -105,11 +114,13 @@ namespace F5SnapshotSave
         {
             GameOptionRegistry.EnsureVanilla();
             ModHelper.AddGameOptionKeyBind(F5SnapshotSaveMod.ModId, GameOptionRegistry.SECTION_KEYBIND, OptionId, Text.KeyOptionLabel, () => Current, Set);
+            Modifier.AddOption();
         }
 
         internal static void RemoveOption()
         {
             ModHelper.RemoveGameOption(F5SnapshotSaveMod.ModId, OptionId);
+            Modifier.RemoveOption();
         }
     }
 }
