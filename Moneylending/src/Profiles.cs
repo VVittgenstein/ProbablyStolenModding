@@ -19,7 +19,7 @@ namespace Moneylending
         internal int AmountPerTenDays;
         internal int MinTerm;
         internal int MaxTerm;              // 0: until the next Sunday (payday and rent day)
-        internal int MinRate;
+        internal int MinRate;              // percent; MinRate and MaxRate are the defaults of the player's settings (Settings.RateRange)
         internal int MaxRate;
         internal int FreeChance;           // percent of requests that offer no interest at all
 
@@ -64,6 +64,13 @@ namespace Moneylending
         internal string DisplayName()
         {
             return LocHelper.GetLocalizedClientName(NameKey);
+        }
+
+        // This kind's part of the keys in the configuration file (Settings): the game's name key without "name_", which gives
+        // scavenger, lower_level_parent, miner, merchant, upper_level_citizen, thief, revolutionary_fighter and tourist.
+        internal string ConfigName
+        {
+            get { return NameKey != null && NameKey.StartsWith("name_", StringComparison.Ordinal) ? NameKey.Substring("name_".Length) : Id; }
         }
     }
 

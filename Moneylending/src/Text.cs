@@ -479,6 +479,52 @@ namespace Moneylending
                 "Уайлд пустит слух, что ваш магазин даёт деньги в долг. За займами будут приходить люди с Нижних и Верхних уровней, с Чёрного рынка и революционеры, а клиенту у прилавка заём можно предложить самому (L открывает учётную книгу). Когда наличных не хватает, займы будут предлагать и вам. В комплекте неоновая вывеска «Займы».");
         }
 
+        // ---- Settings window (Settings) --------------------------------------------------------------------------------
+
+        internal static string SettingCost() { return T("“放贷门路”的价格（信用点）", "Price of \"Moneylending\" (Credits)", "Цена «Выдачи займов» (Кр.)"); }
+        internal static string SettingCostTip()
+        {
+            return string.Format(CultureInfo.InvariantCulture, T(
+                "王尔德的人脉网络中“放贷门路”的基础价格，默认 {0}，可填 0 至 {1}。实际价格仍由游戏按难度和特性的倍率计算。只对还没有买下“放贷门路”的存档有效。",
+                "Base price of \"Moneylending\" in Wild's network: {0} by default, 0 to {1}. The game still applies its multipliers for the difficulty and perks. Only affects runs that have not bought \"Moneylending\" yet.",
+                "Базовая цена «Выдачи займов» в сети Уайлда: по умолчанию {0}, допустимо от 0 до {1}. Итоговую цену игра по-прежнему рассчитывает с учётом сложности и других множителей. Действует только в прохождениях, где «Выдача займов» ещё не куплена."),
+                Unlock.DefaultCost, Settings.MaxCost);
+        }
+        internal static string SettingMinRate(string borrower) { return string.Format(CultureInfo.InvariantCulture, T("{0}：利息下限（%）", "{0}: lowest interest (%)", "{0}: мин. ставка (%)"), borrower); }
+        internal static string SettingMaxRate(string borrower) { return string.Format(CultureInfo.InvariantCulture, T("{0}：利息上限（%）", "{0}: highest interest (%)", "{0}: макс. ставка (%)"), borrower); }
+        internal static string SettingRateTip(Profile p)
+        {
+            string tip = string.Format(CultureInfo.InvariantCulture, T(
+                "{0}提出借钱时，利息取下限与上限之间的一个整数百分比。默认 {1}% 至 {2}%，可填 0 至 {3}；下限比上限大时，两个数对调后使用。只影响之后新提出的借款，已经借出的和当天已经提出的不变。",
+                "{0}: the interest proposed is a whole percentage between the lowest and the highest. {1}% to {2}% by default, 0 to {3}; if the lowest is above the highest, the two are used the other way round. Only affects loans requested from now on, not loans already made or the request already made today.",
+                "{0}: ставка по займу выбирается как целое число процентов между минимальной и максимальной. По умолчанию от {1}% до {2}%, допустимо от 0 до {3}; если минимальная ставка больше максимальной, значения меняются местами. Действует только на новые просьбы о займе: уже выданные займы и просьба, уже поступившая сегодня, не меняются."),
+                BorrowerName(p), p.MinRate, p.MaxRate, Settings.MaxRate);
+            if (p.FreeChance > 0)
+            {
+                tip += string.Format(CultureInfo.InvariantCulture, T(
+                    "每次请求有 {0}% 的概率不付利息，这两项只用于其余的请求。",
+                    " Each request has a {0}% chance of offering no interest; these two entries apply to the others.",
+                    " Каждая просьба с вероятностью {0}% приходит без процентов; эти два значения действуют на остальные."),
+                    p.FreeChance);
+            }
+            return tip;
+        }
+
+        // The game's own name for this kind of customer in the game language, as the borrowers are named in the game; the
+        // name from the configuration file's keys if the game gives none.
+        internal static string BorrowerName(Profile p)
+        {
+            string name = null;
+            try
+            {
+                name = p.DisplayName();
+            }
+            catch (Exception)
+            {
+            }
+            return string.IsNullOrEmpty(name) || name == p.NameKey ? p.ConfigName.Replace('_', ' ') : name;
+        }
+
         // ---- Neon sign ------------------------------------------------------------------------------------------------
 
         internal static string SignName() { return T("放贷霓虹灯牌", "Moneylending Neon Sign", "Неоновая вывеска «Займы»"); }

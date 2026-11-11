@@ -57,11 +57,14 @@ namespace F5SnapshotSave
             return true;
         }
 
-        // The keyboard keys the game's key capture can return (every KeyCode above None and below Mouse0) except Escape,
-        // which cancels the capture. Since the game 1.0.0.12 the capture (KeyBindHelper.CaptureKeys, formerly
-        // KeyboardKeys) also returns Mouse1 to Mouse6; mouse keys are not taken here.
+        // The keys taken from the game's key capture (KeyBindHelper.CaptureKeys): every keyboard key (above None and below
+        // Mouse0) except Escape, which cancels the capture, and the mouse's side buttons Mouse3 to Mouse6, which the capture
+        // also returns since the game 1.0.0.12 and which the game's rows show as "Mouse 4" to "Mouse 7". The left button is
+        // reserved by the game and its own rows use the right button and the wheel button; those three are not taken.
         internal static bool Bindable(UnityEngine.KeyCode key)
         {
+            if (key >= UnityEngine.KeyCode.Mouse3 && key <= UnityEngine.KeyCode.Mouse6)
+                return true;
             return key > UnityEngine.KeyCode.None && key < UnityEngine.KeyCode.Mouse0 && key != UnityEngine.KeyCode.Escape;
         }
 

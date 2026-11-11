@@ -3,7 +3,7 @@
   <ID>Moneylending</ID>
   <Name>放贷 Moneylending</Name>
   <Author>dwqadad123</Author>
-  <ModVersion>1.4.2</ModVersion>
+  <ModVersion>1.5.0</ModVersion>
   <Description>在王尔德的人脉网络里买下“放贷门路”后，各类人会上门借钱，到期按各自的情况还钱、拖欠或失联；按 L 打开账本，也可以向柜台前的顾客提出借钱；手头紧时高利贷者和银行会借钱给你。Buy "Moneylending" in Wild's network: people come to borrow and later repay, pay late or vanish, each in their own way; press L for the ledger and to offer a loan to the customer at the counter; when cash runs short, the Loan Shark and the bank lend to you. Купите «Выдачу займов» в сети Уайлда: к вам начнут приходить за займами, а потом каждый по-своему вернёт долг, задержит его или исчезнет; L открывает учётную книгу, где можно предложить заём клиенту у прилавка; когда наличных не хватает, займы вам предложат нелегальный ростовщик и банк.</Description>
   <GameVersions>
     <Version>0.46D</Version>

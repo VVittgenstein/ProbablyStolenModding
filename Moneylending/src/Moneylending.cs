@@ -1,7 +1,7 @@
 using System;
 
 [assembly: System.Reflection.AssemblyTitle("Moneylending")]
-[assembly: System.Reflection.AssemblyVersion("1.4.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
 
 namespace Moneylending
 {
@@ -20,6 +20,15 @@ namespace Moneylending
 
         public void OnEnable()
         {
+            // The mod runs with the default price and rates if its settings cannot be set up.
+            try
+            {
+                Settings.Define();
+            }
+            catch (Exception e)
+            {
+                Warn("setting up the settings failed: " + e);
+            }
             Clients.RegisterStatic();
 
             ModHook.OnGameLoadedInit -= OnGameLoading;

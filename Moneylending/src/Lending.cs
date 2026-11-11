@@ -73,7 +73,10 @@ namespace Moneylending
             r.sprite = sprite;
             int amount = RNG.GetRandomInt(p.MinAmount, p.MaxAmount) + day * p.AmountPerTenDays / 10;
             r.amount = Game.RoundTo(amount, amount >= 300 ? 50 : 10);
-            r.rate = p.FreeChance > 0 && RNG.Roll(p.FreeChance) ? 0 : RNG.GetRandomInt(p.MinRate, p.MaxRate);
+            // The range is the player's (Settings.RateRange), Profile.MinRate to MaxRate unless changed.
+            int minRate, maxRate;
+            Settings.RateRange(p, out minRate, out maxRate);
+            r.rate = p.FreeChance > 0 && RNG.Roll(p.FreeChance) ? 0 : RNG.GetRandomInt(minRate, maxRate);
             r.term = p.MaxTerm == 0 ? DaysUntilSunday(day) : RNG.GetRandomInt(p.MinTerm, p.MaxTerm);
 
             bool pledge = mayPledge && p.CollateralItems != null && p.CollateralItems.Length > 0
