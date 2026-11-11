@@ -34,6 +34,8 @@ namespace F5SnapshotSave
             "buyingDiscountOffered", "buyingDiscountPercent", "buyingDiscountApplied", "threatenOffered", "threatenApplied",
         };
 
+        private const string PortraitsRoot = "corpPortraits";
+
         internal const string DialogNone = "none";
         internal const string DialogWaiting = "wait";
         internal const string DialogChoice = "choice";
@@ -65,6 +67,38 @@ namespace F5SnapshotSave
             internal bool NegotiationOpen;
             internal bool BargainOpen;
             internal string Sprite = "";
+            // Set when nothing has been rebuilt yet: the snapshot points at state of an integration mod that is only
+            // in place once the store has started, and is read then (Restore, ShutterUpdatePatch).
+            internal Stored Later;
+            // Portrait keys of CorpPresence visitors with their reference keys (CorpLink.PortraitPairs).
+            internal List<string> Portraits = new List<string>();
+        }
+
+        // The values of a snapshot as they were stored in the save, kept after the keys have been removed from
+        // PlayerStore.modData.
+        internal sealed class Stored
+        {
+            internal string Format;
+            internal string Graph;
+            internal string Dialog;
+            internal string Negotiation;
+            internal string BargainOpen;
+            internal string BargainFields;
+            internal string Sprite;
+        }
+
+        internal static Stored Take()
+        {
+            return new Stored
+            {
+                Format = Get(FormatKey),
+                Graph = Get(GraphKey),
+                Dialog = Get(DialogKey),
+                Negotiation = Get(NegotiationKey),
+                BargainOpen = Get(BargainOpenKey),
+                BargainFields = Get(BargainFieldsKey),
+                Sprite = Get(SpriteKey),
+            };
         }
 
         private static List<FieldInfo> BargainFields()
@@ -150,6 +184,18 @@ namespace F5SnapshotSave
                 w.AddRootList("features", features);
                 cap.Sprite = SpriteKeyOf(store.currentClientInstance);
             }
+
+            // The portraits CorpPresence registered for the visitors of this snapshot; no root when there are none.
+            var visitors = new List<StoreClient>();
+            if (manager != null && manager.clientStack != null)
+                visitors.AddRange(manager.clientStack);
+            if (manager != null && manager.chemicalFeedbackStack != null)
+                visitors.AddRange(manager.chemicalFeedbackStack);
+            if (withCounter && store.currentClientInstance != null)
+                visitors.Add(store.currentClientInstance.GetClientBlueprint());
+            List<string> portraits = CorpLink.PortraitPairs(visitors);
+            if (portraits.Count > 0)
+                w.AddRootList(PortraitsRoot, portraits);
 
             string text = w.Finish();
             cap.Objects = w.ObjectCount;
@@ -295,31 +341,45 @@ namespace F5SnapshotSave
             return true;
         }
 
+        // Reads the snapshot of the save that was loaded, in ModHook.OnGameLoadedLate. A snapshot that points at state
+        // of an integration mod is not rebuilt here (Restored.Later).
         internal static Restored Read(out List<string> errors)
         {
+            return ReadStored(Take(), true, out errors);
+        }
+
+        // later: whether a snapshot that points at state of an integration mod is left for a second call. CorpPresence
+        // drops its state objects when PlayerStore.LoadGame returns (its Hooks.AfterLoadGame), which is after
+        // ModHook.OnGameLoadedLate; a visitor rebuilt before that would point at objects CorpPresence no longer uses.
+        internal static Restored ReadStored(Stored stored, bool later, out List<string> errors)
+        {
             errors = new List<string>();
-            string format = Get(FormatKey);
+            string format = stored.Format;
             if (format != "1" && format != Codec.Format.ToString(CultureInfo.InvariantCulture))
             {
                 errors.Add("unknown snapshot format " + format);
                 return null;
             }
-            var reader = new GraphReader(SnapshotContext.Create(), false);
-            if (!reader.Read(Get(GraphKey)))
+            var reader = new GraphReader(SnapshotContext.Create(), false, later);
+            if (!reader.Read(stored.Graph))
             {
                 errors.AddRange(reader.Errors);
                 return null;
             }
+            if (reader.Deferred)
+                return new Restored { Later = stored, DialogState = stored.Dialog };
             foreach (string warning in reader.Warnings)
                 UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + warning);
 
             var r = new Restored
             {
-                DialogState = Get(DialogKey),
-                NegotiationOpen = Get(NegotiationKey) == "1",
-                BargainOpen = Get(BargainOpenKey) == "1",
-                Sprite = Get(SpriteKey),
+                DialogState = stored.Dialog,
+                NegotiationOpen = stored.Negotiation == "1",
+                BargainOpen = stored.BargainOpen == "1",
+                Sprite = stored.Sprite,
             };
+            foreach (object o in reader.Root(PortraitsRoot))
+                r.Portraits.Add(o as string ?? "");
             foreach (object o in reader.Root("queue"))
             {
                 var c = o as StoreClient;
@@ -346,7 +406,7 @@ namespace F5SnapshotSave
                     if (item != null && list != null)
                         r.Features.Add(new KeyValuePair<GameItem, List<ItemFeature>>(item, list));
                 }
-                string[] names = Get(BargainFieldsKey).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                string[] names = (stored.BargainFields ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 List<object> values = reader.Root("bargain");
                 for (int i = 0; i < names.Length && i < values.Count; i++)
                 {

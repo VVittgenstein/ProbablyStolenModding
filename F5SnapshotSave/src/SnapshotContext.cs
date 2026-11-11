@@ -11,6 +11,10 @@ namespace F5SnapshotSave
     {
         private readonly Dictionary<object, KeyValuePair<SnapshotField, List<SnapshotField>>> knownPaths =
             new Dictionary<object, KeyValuePair<SnapshotField, List<SnapshotField>>>(ReferenceComparer.Instance);
+        // Objects of an integration mod that are found again after loading through fields, dictionary keys and
+        // indexes (CorpLink).
+        private readonly Dictionary<object, KeyValuePair<SnapshotField, PathStep[]>> modPaths =
+            new Dictionary<object, KeyValuePair<SnapshotField, PathStep[]>>(ReferenceComparer.Instance);
         private readonly HashSet<object> placedItems = new HashSet<object>(ReferenceComparer.Instance);
         private readonly Dictionary<int, GameItem> itemsByUid = new Dictionary<int, GameItem>();
         private readonly HashSet<int> sharedUids = new HashSet<int>();
@@ -22,6 +26,39 @@ namespace F5SnapshotSave
             ctx.AddStoreRoots();
             ctx.CollectItems();
             return ctx;
+        }
+
+        // The state of an integration mod (CorpLink): called for every snapshot that is written, and for a snapshot
+        // that is read only when it points at such state.
+        private bool modLinked;
+        internal void LinkModState()
+        {
+            if (modLinked)
+                return;
+            modLinked = true;
+            CorpLink.Prepare(this);
+        }
+
+        internal bool AddModPath(object o, SnapshotField holder, PathStep[] steps)
+        {
+            if (modPaths.ContainsKey(o) || knownPaths.ContainsKey(o))
+                return false;
+            modPaths[o] = new KeyValuePair<SnapshotField, PathStep[]>(holder, steps);
+            return true;
+        }
+
+        internal bool TryFindModPath(object o, out SnapshotField holder, out PathStep[] steps)
+        {
+            KeyValuePair<SnapshotField, PathStep[]> known;
+            if (modPaths.TryGetValue(o, out known))
+            {
+                holder = known.Key;
+                steps = known.Value;
+                return true;
+            }
+            holder = null;
+            steps = null;
+            return false;
         }
 
         // The store singletons and the objects in their fields are found again by path after loading; a closure that

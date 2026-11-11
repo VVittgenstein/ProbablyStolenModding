@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.6.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.6.1.0")]
 
 namespace F5SnapshotSave
 {
@@ -418,6 +418,13 @@ namespace F5SnapshotSave
         internal static List<StoreClient> PendingQueue;
         internal static List<StoreClient> PendingFeedback;
         internal static Snapshot.Restored PendingCounter;
+        // A snapshot that points at the state of an integration mod (Snapshot.Restored.Later): it is rebuilt on the
+        // first shutter update, with the F5ForceSave-format queue for the case that it cannot be rebuilt then.
+        internal static Snapshot.Stored PendingLater;
+        internal static List<CustomerQueue.Entry> PendingLaterQueue;
+        // Portraits of CorpPresence visitors that CorpPresence adds to the sprite dictionary of the store again before
+        // the customers are put back (CorpLink.EnsurePortraits).
+        internal static List<string> PendingPortraits;
         internal static string PendingNotice;
         // 0.5.1: the key-conflict sentence of the load key (QuickLoad.OnGameLoaded) when this load also has a notice of
         // its own; the two are shown together, as Notice.Show does for the other messages of that key.
@@ -425,7 +432,7 @@ namespace F5SnapshotSave
 
         internal static bool AnythingPending
         {
-            get { return PendingOpenShutter || PendingShowFrontArea || PendingQueue != null || PendingFeedback != null || PendingCounter != null || PendingNotice != null; }
+            get { return PendingOpenShutter || PendingShowFrontArea || PendingQueue != null || PendingFeedback != null || PendingCounter != null || PendingLater != null || PendingNotice != null; }
         }
 
         internal static void OnGameLoaded()
@@ -436,6 +443,9 @@ namespace F5SnapshotSave
             PendingQueue = null;
             PendingFeedback = null;
             PendingCounter = null;
+            PendingLater = null;
+            PendingLaterQueue = null;
+            PendingPortraits = null;
             PendingConflict = null;
             PendingNotice = Coexist.NoticePending ? Text.TookOver() : null;
             Coexist.NoticePending = false;
@@ -492,8 +502,15 @@ namespace F5SnapshotSave
                     Snapshot.ClearKeys();
                 }
 
-                if (exact != null)
+                if (exact != null && exact.Later != null)
                 {
+                    PendingLater = exact.Later;
+                    PendingLaterQueue = legacy.Queue;
+                    UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "the snapshot points at the state of CorpPresence; it is read when the store has started");
+                }
+                else if (exact != null)
+                {
+                    PendingPortraits = exact.Portraits;
                     PendingQueue = exact.Queue;
                     PendingFeedback = exact.Feedback.Count > 0 ? exact.Feedback : null;
                     PendingCounter = exact.Counter != null ? exact : null;
@@ -713,6 +730,51 @@ namespace F5SnapshotSave
             Restore.PendingNotice = null;
             Restore.PendingConflict = null;
             PlayerStore store = PlayerStore.Instance;
+            Snapshot.Stored later = Restore.PendingLater;
+            List<CustomerQueue.Entry> laterQueue = Restore.PendingLaterQueue;
+            List<string> portraits = Restore.PendingPortraits;
+            Restore.PendingLater = null;
+            Restore.PendingLaterQueue = null;
+            Restore.PendingPortraits = null;
+            if (later != null)
+            {
+                // PlayerStore.LoadGame has returned and CorpPresence has dropped the state objects it held while the
+                // save was being read; from here on it uses the state it loads at its next use, which is the state
+                // the visitors of this snapshot are pointed at.
+                Snapshot.Restored exact = null;
+                List<string> errors = null;
+                try
+                {
+                    exact = Snapshot.ReadStored(later, false, out errors);
+                }
+                catch (Exception e)
+                {
+                    errors = new List<string> { e.ToString() };
+                }
+                if (exact != null)
+                {
+                    portraits = exact.Portraits;
+                    queue = exact.Queue;
+                    feedback = exact.Feedback.Count > 0 ? exact.Feedback : null;
+                    counter = exact.Counter != null ? exact : null;
+                    UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "snapshot read: " + store.storeState
+                        + ", waiting customers " + exact.Queue.Count + ", feedback customers " + exact.Feedback.Count
+                        + (exact.Counter != null ? ", customer at the counter '" + exact.Counter.GetClientBlueprint().identifier + "', conversation " + exact.DialogState : ""));
+                }
+                else
+                {
+                    UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "the snapshot could not be rebuilt; customers are re-created by identifier: "
+                        + string.Join("; ", errors.GetRange(0, Math.Min(12, errors.Count)).ToArray()));
+                    notice = Text.FellBack();
+                    if (laterQueue != null && laterQueue.Count > 0)
+                    {
+                        int failed;
+                        queue = CustomerQueue.CreateAll(laterQueue, out failed);
+                        UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "customers re-created by identifier: " + queue.Count + (failed > 0 ? ", " + failed + " could not be created" : ""));
+                    }
+                }
+            }
+            CorpLink.EnsurePortraits(portraits);
             try
             {
                 StoreClientManager manager = store.storeClientManager;

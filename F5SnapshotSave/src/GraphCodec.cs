@@ -41,8 +41,9 @@ namespace F5SnapshotSave
     // Object categories: c class fields, s struct fields, P fields set on an existing object, a array, l List,
     // h HashSet, q Queue, k Stack, d Dictionary, v delegate, x existing object, g item by unique ID,
     // G item stored with the game's item encoding, u asset by name, w StringBuilder, o plain object,
-    // I StoreClientInstance.
-    // Existing objects are written as a path: S<type id>:<static field id> followed by .<instance field id> steps.
+    // I StoreClientInstance, K the current session of CorpPresence (CorpLink).
+    // Existing objects are written as a path: S<type id>:<static field id> followed by steps: .<instance field id>,
+    // .a<array index>, .i<list index>, .k<dictionary key> (a string key, PathStep.EscapeKey).
     internal static class Codec
     {
         internal const string Magic = "F5SnapshotSave";
@@ -220,6 +221,7 @@ namespace F5SnapshotSave
         internal GraphWriter(SnapshotContext ctx)
         {
             this.ctx = ctx;
+            ctx.LinkModState();
         }
 
         internal int ObjectCount { get { return nextId; } }
@@ -357,6 +359,18 @@ namespace F5SnapshotSave
             Type t = box.GetType();
             Count(t);
             var sb = new StringBuilder();
+            if (CorpLink.IsSession(t))
+            {
+                // Taken again from CorpPresence after loading. A session that is not the current one belongs to a
+                // visitor whose actions no longer run; it cannot be given back as it is.
+                bool current = false;
+                try { current = CorpLink.SessionIsCurrent(box); }
+                catch (Exception e) { Errors.Add(path + ": " + e.GetType().Name); }
+                if (!current)
+                    Errors.Add(path + ": session of CorpPresence that is not the current one");
+                objectLines.Add("O\t" + id + "\tK\t" + TypeId(t));
+                return id;
+            }
             sb.Append("O\t").Append(id).Append("\ts\t").Append(TypeId(t));
             AppendFields(sb, box, t, path);
             objectLines.Add(sb.ToString());
@@ -542,6 +556,21 @@ namespace F5SnapshotSave
                 path = "S" + TypeId(holder.DeclaringType) + ":" + FieldId(holder) + ".a" + index;
                 return true;
             }
+            PathStep[] steps;
+            if (ctx.TryFindModPath(o, out holder, out steps))
+            {
+                var mod = new StringBuilder();
+                mod.Append('S').Append(TypeId(holder.DeclaringType)).Append(':').Append(FieldId(holder));
+                foreach (PathStep step in steps)
+                {
+                    mod.Append('.');
+                    if (step.Kind == 'f') mod.Append(FieldId(step.Field));
+                    else if (step.Kind == 'k') mod.Append('k').Append(PathStep.EscapeKey(step.Key));
+                    else mod.Append(step.Kind).Append(step.Index.ToString(CultureInfo.InvariantCulture));
+                }
+                path = mod.ToString();
+                return true;
+            }
             if (!ctx.TryFindPath(o, out holder, out chain))
             {
                 path = null;
@@ -648,13 +677,25 @@ namespace F5SnapshotSave
         private readonly Dictionary<int, object> objs = new Dictionary<int, object>();
         private readonly HashSet<int> structsFilled = new HashSet<int>();
         private readonly HashSet<int> inProgress = new HashSet<int>();
+        // Objects created through a constructor that takes some of their fields (CorpLink.ConstructorFields).
+        private readonly HashSet<int> byConstructor = new HashSet<int>();
+
+        // Set by Read when the snapshot points at state that an integration mod replaces after loading
+        // (CorpLink.IsStateRoot, or a session of CorpPresence).
+        internal bool UsesModState;
+        // Set by Read when such a snapshot was found and nothing was built (deferModState).
+        internal bool Deferred;
+        private readonly bool deferModState;
 
         // dryRun: everything is resolved and built, but items stored with the game's encoding are not decoded
         // (the field gets null). Used to check a snapshot right after writing it.
-        internal GraphReader(SnapshotContext ctx, bool dryRun)
+        // deferModState: a snapshot that points at state of an integration mod is only parsed; Read returns true with
+        // Deferred set, and the snapshot is read again when that state is in place.
+        internal GraphReader(SnapshotContext ctx, bool dryRun, bool deferModState = false)
         {
             this.ctx = ctx;
             this.dryRun = dryRun;
+            this.deferModState = deferModState;
         }
 
         internal bool Read(string text)
@@ -667,10 +708,22 @@ namespace F5SnapshotSave
                 ResolveTables();
                 if (Errors.Count > 0)
                     return false;
+                UsesModState = FindModState();
+                if (UsesModState && deferModState)
+                {
+                    Deferred = true;
+                    return true;
+                }
+                if (UsesModState)
+                    ctx.LinkModState();
                 CreateObjects();
                 if (Errors.Count > 0)
                     return false;
                 BindReadonlyFields();
+                if (Errors.Count > 0)
+                    return false;
+                foreach (int id in new List<int>(byConstructor))
+                    EnsureConstructed(id);
                 if (Errors.Count > 0)
                     return false;
                 foreach (KeyValuePair<int, string[]> r in objectRecords)
@@ -711,6 +764,31 @@ namespace F5SnapshotSave
         internal bool HasRoot(string name)
         {
             return rootRecords.ContainsKey(name);
+        }
+
+        private bool FindModState()
+        {
+            foreach (KeyValuePair<int, string[]> r in objectRecords)
+            {
+                string[] p = r.Value;
+                if (p.Length < 4)
+                    continue;
+                if (p[2] == "K")
+                    return true;
+                if ((p[2] != "x" && p[2] != "P") || p.Length < 5 || p[4].Length < 2 || p[4][0] != 'S')
+                    continue;
+                string head = p[4].Substring(1);
+                int dot = head.IndexOf('.');
+                if (dot >= 0)
+                    head = head.Substring(0, dot);
+                int colon = head.IndexOf(':');
+                SnapshotField holder;
+                int id;
+                if (colon > 0 && int.TryParse(head.Substring(colon + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out id)
+                    && fields.TryGetValue(id, out holder) && CorpLink.IsStateRoot(holder))
+                    return true;
+            }
+            return false;
         }
 
         internal List<object> Root(string name)
@@ -911,6 +989,7 @@ namespace F5SnapshotSave
                             // The game's readonly members are initialized by its own constructors.
                             // RichTextBuilder's arrays are then filled through normal array operations.
                             if (SnapshotTuples.IsTuple(t)) objs[id] = SnapshotTuples.Access(t).Create();
+                            else if (cat == "c" && CorpLink.ConstructorFields(t) != null) byConstructor.Add(id);
                             else if (t == typeof(RichTextBuilder)) objs[id] = new RichTextBuilder();
                             else if (SnapshotSchema.DeclaredFields(t).Exists(f => !f.IsStatic && f.IsReadOnly)) objs[id] = ModReflect.New(t);
                             else objs[id] = FormatterServices.GetUninitializedObject(t);
@@ -936,6 +1015,12 @@ namespace F5SnapshotSave
                             break;
                         case "I":
                             objs[id] = new StoreClientInstance();
+                            break;
+                        case "K":
+                            object session = CorpLink.CaptureSession(t);
+                            if (session == null || !CorpLink.SessionIsCurrent(session))
+                                Errors.Add("object " + id + ": CorpPresence gave no current session");
+                            objs[id] = session;
                             break;
                         case "x":
                         case "P":
@@ -993,6 +1078,22 @@ namespace F5SnapshotSave
                     int index = Codec.ParseInt(steps[i].Substring(1));
                     if (array == null || array.Rank != 1 || index < 0 || index >= array.Length) return null;
                     cur = array.GetValue(index);
+                    continue;
+                }
+                if (steps[i].StartsWith("i", StringComparison.Ordinal))
+                {
+                    var list = cur as IList;
+                    int index = Codec.ParseInt(steps[i].Substring(1));
+                    if (list == null || index < 0 || index >= list.Count) return null;
+                    cur = list[index];
+                    continue;
+                }
+                if (steps[i].StartsWith("k", StringComparison.Ordinal))
+                {
+                    var dictionary = cur as IDictionary;
+                    string key = PathStep.UnescapeKey(steps[i].Substring(1));
+                    if (dictionary == null || !dictionary.Contains(key)) return null;
+                    cur = dictionary[key];
                     continue;
                 }
                 SnapshotField f;
@@ -1056,7 +1157,7 @@ namespace F5SnapshotSave
             foreach (KeyValuePair<int, string[]> record in objectRecords)
             {
                 string[] p = record.Value;
-                if (p[2] != "c") continue;
+                if (p[2] != "c" || byConstructor.Contains(record.Key)) continue;
                 object owner = objs[record.Key];
                 for (int i = 4; i < p.Length; i++)
                 {
@@ -1087,6 +1188,51 @@ namespace F5SnapshotSave
                     objs[id] = current;
                 }
             }
+        }
+
+        // Creates an object through its constructor, with the stored values of the fields the constructor takes.
+        // The fields are filled and compared afterwards like those of every other object (FillFields).
+        private object EnsureConstructed(int id)
+        {
+            object existing;
+            if (objs.TryGetValue(id, out existing))
+                return existing;
+            string[] p = objectRecords[id];
+            Type t = TypeOf(Codec.ParseInt(p[3]));
+            if (!inProgress.Add(id))
+            {
+                Errors.Add("object " + id + " (" + t.FullName + ") is needed by its own constructor");
+                return null;
+            }
+            object made = null;
+            try
+            {
+                var tokens = new Dictionary<string, string>();
+                for (int i = 4; i < p.Length; i++)
+                {
+                    int eq = p[i].IndexOf('=');
+                    SnapshotField f;
+                    if (eq > 0 && fields.TryGetValue(Codec.ParseInt(p[i].Substring(0, eq)), out f))
+                        tokens[f.Name] = p[i].Substring(eq + 1);
+                }
+                string[] names = CorpLink.ConstructorFields(t);
+                var args = new object[names.Length];
+                for (int i = 0; i < names.Length; i++)
+                {
+                    string token;
+                    if (!tokens.TryGetValue(names[i], out token))
+                        throw new NotSupportedException("field " + names[i] + " is not stored");
+                    args[i] = Resolve(token);
+                }
+                made = ModReflect.New(t, args);
+            }
+            catch (Exception e)
+            {
+                Errors.Add("creating object " + id + " (" + t.FullName + "): " + e.Message);
+            }
+            inProgress.Remove(id);
+            objs[id] = made;
+            return made;
         }
 
         private void FillFields(int id, string[] p, int start)
@@ -1236,6 +1382,8 @@ namespace F5SnapshotSave
                         return GetDelegate(id);
                     if (rec[2] == "s")
                         EnsureStruct(id);
+                    if (byConstructor.Contains(id))
+                        return EnsureConstructed(id);
                     object o;
                     objs.TryGetValue(id, out o);
                     return o;
