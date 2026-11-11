@@ -14,6 +14,10 @@ Seven complete mod build projects for [Probably Stolen](https://store.steampower
 | [MentorNoteAutoFile](MentorNoteAutoFile/) | 1.1.1 | Automatically file mentor notes / 导师笔记自动收进手册 | [3828962954](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962954) |
 | [Moneylending](Moneylending/) | 1.5.0 | Moneylending / 放贷 | [3830603988](https://steamcommunity.com/sharedfiles/filedetails/?id=3830603988) |
 
+The [open_beta](open_beta/) folder holds a variant of F5SnapshotSave for the game's open_beta branch. It is not published on the Workshop, has not been tested on open_beta and gets no timely support; see its README.
+
+[open_beta](open_beta/) 文件夹存放为游戏 open_beta 分支准备的 F5SnapshotSave 变体：不上创意工坊，没有在 open_beta 上实测，不会得到及时的支持，详见其中的 README。
+
 ## Build / 构建
 
 Validated with Windows, PowerShell 7, .NET SDK 9.0.318, and the rev13 game build 26525552. The scripts use the installed SDK's C# compiler, target the game's Mono assemblies, and restore no NuGet packages.

@@ -28,3 +28,8 @@ GunsmithExpansion/Books/
 GunsmithExpansion2077/guns.tsv
 GunsmithExpansion2077/Textures/
 Moneylending/Textures/
+open_beta/README.md
+open_beta/F5SnapshotSave/src/
+open_beta/F5SnapshotSave/manifest.xml
+open_beta/F5SnapshotSave/build.ps1
+open_beta/F5SnapshotSave/tools/generate_snapshot_schema.ps1

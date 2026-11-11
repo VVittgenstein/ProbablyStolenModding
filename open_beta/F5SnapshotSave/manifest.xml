@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Manifest>
+  <ID>F5SnapshotSave</ID>
+  <Name>F5 存档加强版（预览版） F5 Quick Save Plus (Preview)</Name>
+  <Author>dwqadad123</Author>
+  <ModVersion>0.6.0-openbeta</ModVersion>
+  <Description>预览版。在店里按 F5 立即存档，柜台上有顾客时也可以；读档后顾客、对话和讨价还价回到按 F5 的那一刻；按 F8 读取最新存档；按 F7 读取最后一次 F5 存档。Preview. Press F5 in the shop to save right away, also with a customer at the counter; loading brings the customer, the conversation and the haggling back to the moment you pressed F5; press F8 to load the latest save; press F7 to load the last F5 save. Предварительная версия. Нажмите F5 в магазине, чтобы сразу сохраниться, даже когда у прилавка клиент; после загрузки клиент, разговор и переговоры о цене возвращаются к моменту нажатия F5; F8 загружает последнее сохранение; F7 загружает последнее сохранение F5.</Description>
+  <GameVersions>
+    <Version>0.46D</Version>
+  </GameVersions>
+  <Prerequisites>
+    <Mod>GunsmithExpansion</Mod>
+    <Mod>Moneylending</Mod>
+    <Mod>KeptShotgun</Mod>
+    <Mod>CorpPresence</Mod>
+    <Mod>Pen_mod_pipette</Mod>
+    <Mod>vanilla_gun_expansion</Mod>
+  </Prerequisites>
+  <Assemblies>
+    <Assembly>F5SnapshotSave.dll</Assembly>
+  </Assemblies>
+  <Capabilities>
+    <Capability>files</Capability>
+  </Capabilities>
+</Manifest>
