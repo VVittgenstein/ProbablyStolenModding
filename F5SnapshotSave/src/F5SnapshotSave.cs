@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.7.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.7.1.0")]
 
 namespace F5SnapshotSave
 {

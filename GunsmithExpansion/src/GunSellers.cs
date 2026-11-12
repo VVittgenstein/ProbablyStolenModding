@@ -79,12 +79,13 @@ namespace GunsmithExpansion
             }
         }
 
-        // The item going on the counter: the game's gun of the seller, or the gun of this mod the pool's draw gives in its place.
+        // The gun of this mod the pool's draw gives in place of the game's gun of the seller going on the counter, or null when the game's gun stays.
+        // The game's gun is left as it is here: GunSellerStockPatch destroys whichever of the two is not on a counter after the game's method.
         internal static GameItem Instead(GameItem item)
         {
             Stock stock = current;
             if (stock == null || item == null || GameGunLevels.Find(item.identifier) == null)
-                return item;
+                return null;
             var guns = new List<GunDef>();
             // Not the 2077 add-on's guns: they come only from the sources of final-strategy 280, which do not include those who come to sell guns (VVittgenstein 2026-11-07 17:28 and 20:06,
             // current/T-006 quotes 15 and 20; until then the elite mercenary and the security tactical officer could bring its two tier three guns with the switch on).
@@ -94,14 +95,24 @@ namespace GunsmithExpansion
                     guns.Add(d);
             }
             if (guns.Count == 0 || rng.Next(guns.Count + stock.GameGuns) >= guns.Count)
-                return item;
+                return null;
             GunDef def = guns[rng.Next(guns.Count)];
             GameItem gun = GunFrameHelper.GetCondition(item) == ItemFeatureList.EquipmentCondition.Poor ? DamagedGuns.Create(def) : DamagedGuns.CreateFair(def);
             if (gun == null)
-                return item;
-            item.Destroy();
+                return null;
             GunsmithMod.Log("gun seller brings " + def.Id + " (" + def.Tier + "): " + RepairOrders.Describe(Faults.Get(gun)));
             return gun;
+        }
+
+        // Destroys an item that is in no inventory and not destroyed yet (the test of GraphUtils.DestroyIfUnplaced, without its report of an unplaced item).
+        internal static void DestroyIfLoose(GameItem item)
+        {
+            if (item == null || item.parentInventory != null)
+                return;
+            var element = item as GameItemElement;
+            if (element != null && element.IsDestroyed())
+                return;
+            item.Destroy();
         }
     }
 
@@ -133,12 +144,41 @@ namespace GunsmithExpansion
     }
 
     // On the way to the counter, as CounterPlacePatch (Supply.cs): the game's PreBuiltItemHelper methods that make the sellers' guns are short enough for the runtime to inline.
+    // The gun of this mod goes into Harmony's __args as well as into the argument (T-027 item 1). Harmony (2.4.2 in the game) fills the __args array from the
+    // arguments once, before the prefixes, and after each prefix that takes __args writes every element of the array back into its argument. Until 0.7.4 the
+    // gun was put only into the ref argument and the game's gun destroyed at once; a prefix with __args that ran after this one, as Vanilla Food Expansion 0.3.10's
+    // VendorSpawning.BeforeOffer does when that mod loads after this one, wrote the game's gun back, and the game's method was given the destroyed gun: the seller's
+    // gun was gone from the counter. This prefix takes every argument by ref and puts their present values into the array, so the write after it changes only
+    // the item; and the game's gun is destroyed after the game's method, by the finalizer, only when it is not on a counter.
     [HarmonyPatch(typeof(PlayerStore), "TryAddDirectSellingItemToTable", new[] { typeof(GameItem), typeof(bool), typeof(bool), typeof(bool), typeof(int) })]
     internal static class GunSellerStockPatch
     {
-        private static void Prefix(ref GameItem gameItem)
+        private static void Prefix(ref GameItem gameItem, ref bool isOwend, ref bool isStolen, ref bool ignorePerk, ref int forcedHeat, object[] __args, out GameItem[] __state)
         {
-            gameItem = GunSellers.Instead(gameItem);
+            __state = null;
+            GameItem gun = GunSellers.Instead(gameItem);
+            if (gun != null)
+            {
+                __state = new[] { gameItem, gun };
+                gameItem = gun;
+            }
+            __args[0] = gameItem;
+            __args[1] = isOwend;
+            __args[2] = isStolen;
+            __args[3] = ignorePerk;
+            __args[4] = forcedHeat;
+        }
+
+        // Whichever of the two the game's method was given in the end, the one that is on no counter is destroyed; when another patch gave the method the game's gun,
+        // that gun stays and this mod's gun goes.
+        private static void Finalizer(GameItem gameItem, GameItem[] __state)
+        {
+            if (__state == null)
+                return;
+            if (!ReferenceEquals(gameItem, __state[1]))
+                GunsmithMod.Log("gun seller: the counter was offered " + (gameItem != null ? gameItem.identifier : "nothing") + " in place of " + __state[1].identifier);
+            GunSellers.DestroyIfLoose(__state[0]);
+            GunSellers.DestroyIfLoose(__state[1]);
         }
     }
 }

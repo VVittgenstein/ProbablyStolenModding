@@ -7,8 +7,8 @@ Seven complete mod build projects for [Probably Stolen](https://store.steampower
 | Project | Version | Function | Steam Workshop |
 |---|---|---|---|
 | [F5ForceSave](F5ForceSave/) | 1.8.0 | F5 quick save / F5 存档 | [3828962908](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962908) |
-| [F5SnapshotSave](F5SnapshotSave/) | 0.7.0 | F5 quick save with more runtime state / F5 存档加强版 | [3831061477](https://steamcommunity.com/sharedfiles/filedetails/?id=3831061477) |
-| [GunsmithExpansion](GunsmithExpansion/) | 0.7.4 | Gunsmith expansion / 枪匠拓展 | [3833272785](https://steamcommunity.com/sharedfiles/filedetails/?id=3833272785) |
+| [F5SnapshotSave](F5SnapshotSave/) | 0.7.1 | F5 quick save with more runtime state / F5 存档加强版 | [3831061477](https://steamcommunity.com/sharedfiles/filedetails/?id=3831061477) |
+| [GunsmithExpansion](GunsmithExpansion/) | 0.7.5 | Gunsmith expansion / 枪匠拓展 | [3833272785](https://steamcommunity.com/sharedfiles/filedetails/?id=3833272785) |
 | [GunsmithExpansion2077](GunsmithExpansion2077/) | 0.7.1 | Four additional guns for Gunsmith Expansion / 枪匠拓展 2077 附加包 | [3836151420](https://steamcommunity.com/sharedfiles/filedetails/?id=3836151420) |
 | [KeptShotgun](KeptShotgun/) | 1.1.2 | Armed robbery and intimidation / 持枪抢劫与威胁议价 | [3830273949](https://steamcommunity.com/sharedfiles/filedetails/?id=3830273949) |
 | [MentorNoteAutoFile](MentorNoteAutoFile/) | 1.1.1 | Automatically file mentor notes / 导师笔记自动收进手册 | [3828962954](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962954) |
