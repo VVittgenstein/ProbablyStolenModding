@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Compiles Moneylending.dll against the installed game's assemblies and installs the mod
-    (manifest.xml, DLL and Textures\) into <GameDir>\Mods\Moneylending.
+    (manifest.xml, DLL, Textures\ and Data\f5-snapshot-fields.json) into <GameDir>\Mods\Moneylending.
 
 .DESCRIPTION
     Uses the C# compiler (csc.dll) of the newest .NET SDK found through `dotnet --list-sdks`.
@@ -9,11 +9,15 @@
     from <GameDir>\Probably Stolen_Data\Managed. Close the game before installing over a copy
     the game has loaded.
 
+    Data\f5-snapshot-fields.json is the field table of the installed DLL for F5 Quick Save Plus
+    (src\F5SnapshotSpec.cs), written by ..\F5SnapshotSave\tools\generate_spec_fields.ps1.
+
 .PARAMETER GameDir
     Game installation directory.
 
 .PARAMETER OutDir
-    Folder that receives manifest.xml, the DLL and Textures\. Defaults to <GameDir>\Mods\Moneylending.
+    Folder that receives manifest.xml, the DLL, Textures\ and the field table. Defaults to
+    <GameDir>\Mods\Moneylending.
 #>
 param(
     [string]$GameDir = 'E:\SteamLibrary\steamapps\common\Probably Stolen',
@@ -28,6 +32,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $managed 'Assembly-CSharp.dll'))) {
     throw "Assembly-CSharp.dll not found under '$managed'. Pass -GameDir."
 }
 if (-not $OutDir) { $OutDir = Join-Path $GameDir "Mods\$modName" }
+$specTool = Join-Path $PSScriptRoot '..\F5SnapshotSave\tools\generate_spec_fields.ps1'
+if (-not (Test-Path -LiteralPath $specTool)) { throw "generate_spec_fields.ps1 not found at '$specTool'." }
 
 $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 $sdkLine = & $dotnet --list-sdks | Select-Object -Last 1
@@ -51,8 +57,17 @@ try {
     & $dotnet $csc -noconfig "@$rsp"
     if ($LASTEXITCODE -ne 0) { throw "csc exited with code $LASTEXITCODE." }
 
+    # The field table is made from the DLL just built, in the staging folder, before anything is copied: F5 Quick Save
+    # Plus uses it only when the module version id recorded in it equals the one of the DLL the game loads. When
+    # compiling or making the table fails, nothing is copied to -OutDir.
+    $stagedTable = Join-Path $staging 'Data\f5-snapshot-fields.json'
+    & $specTool -Dll $dll -Out $stagedTable -GameDir $GameDir
+    if (-not (Test-Path -LiteralPath $stagedTable)) { throw "The field table was not written: $stagedTable" }
+
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     Copy-Item -LiteralPath $dll -Destination (Join-Path $OutDir "$modName.dll") -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'Data') | Out-Null
+    Copy-Item -LiteralPath $stagedTable -Destination (Join-Path $OutDir 'Data\f5-snapshot-fields.json') -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'manifest.xml') -Destination (Join-Path $OutDir 'manifest.xml') -Force
     # Textures\Items\*.png: item pictures the game's ModLoader loads into this mod's sprites (the neon sign).
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Textures') -Destination $OutDir -Recurse -Force

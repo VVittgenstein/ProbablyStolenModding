@@ -34,7 +34,14 @@ namespace F5SnapshotSave
             "buyingDiscountOffered", "buyingDiscountPercent", "buyingDiscountApplied", "threatenOffered", "threatenApplied",
         };
 
-        private const string PortraitsRoot = "corpPortraits";
+        // The roots of the waiting customers and of the chemical feedback customers. Since 0.8.0 (format 3) the queue root
+        // holds only the waiting customers that are in the snapshot, and SlotsRoot holds the whole line: per waiting
+        // customer in StoreClientManager.clientStack order an int, the index into the queue root, or a string, the
+        // CustomerQueue.Encode text of that one customer, who was left out of the snapshot and is created again by
+        // identifier after loading. Formats 1 and 2 have no SlotsRoot; their queue root is the whole line.
+        private const string QueueRoot = "queue";
+        private const string FeedbackRoot = "feedback";
+        private const string SlotsRoot = "queueSlots";
 
         internal const string DialogNone = "none";
         internal const string DialogWaiting = "wait";
@@ -51,11 +58,48 @@ namespace F5SnapshotSave
             internal string Sprite = "";
             internal int Objects;
             internal int Waiting;
+            // 0.8.0: the waiting customers left out of the snapshot (created again by identifier after loading).
+            internal int Excluded;
+        }
+
+        // 0.8.0: why no snapshot can be written. Counter: something of the counter group (the customer at the counter,
+        // the conversation, the haggling state, the counter items' features) cannot be stored. Feedback: a customer of the
+        // chemical feedback list cannot be stored; such customers are not in the F5ForceSave-format queue and cannot be
+        // created again by identifier (yzz 2026-11-12, T-029 quote 10). Queue: the snapshot fails its read-back check
+        // without a customer to leave out and without a customer at the counter.
+        internal enum Refusal
+        {
+            None,
+            Counter,
+            Feedback,
+            Queue,
+        }
+
+        internal sealed class Outcome
+        {
+            internal Captured Snapshot;     // null when the save is refused
+            internal Refusal Refused;
+            internal string Error;          // for the log
+            // The IDs of the mods whose objects made F5 leave a waiting customer out or refuse the save (IncompatibleNotice).
+            internal readonly List<string> Mods = new List<string>();
+        }
+
+        // 0.8.0: one place in the line of waiting customers: a customer rebuilt from the snapshot, or the identifier data of
+        // a customer left out of it, created on the first shutter update (CreateLeftOut).
+        internal sealed class WaitingSlot
+        {
+            internal StoreClient Client;
+            internal CustomerQueue.Entry Entry;
         }
 
         internal sealed class Restored
         {
+            // The waiting customers rebuilt from the snapshot.
             internal List<StoreClient> Queue = new List<StoreClient>();
+            // 0.8.0: the whole line in its order, including the customers left out of the snapshot.
+            internal List<WaitingSlot> Slots = new List<WaitingSlot>();
+            // 0.8.0: extra data of the mods that follow the spec, given back on the first shutter update (GiveExtraBack).
+            internal List<ExtraValue> Extras = new List<ExtraValue>();
             internal List<StoreClient> Feedback = new List<StoreClient>();
             internal StoreClientInstance Counter;
             internal Dialogue Dialog;
@@ -67,11 +111,6 @@ namespace F5SnapshotSave
             internal bool NegotiationOpen;
             internal bool BargainOpen;
             internal string Sprite = "";
-            // Set when nothing has been rebuilt yet: the snapshot points at state of an integration mod that is only
-            // in place once the store has started, and is read then (Restore, ShutterUpdatePatch).
-            internal Stored Later;
-            // Portrait keys of CorpPresence visitors with their reference keys (CorpLink.PortraitPairs).
-            internal List<string> Portraits = new List<string>();
         }
 
         // The values of a snapshot as they were stored in the save, kept after the keys have been removed from
@@ -138,16 +177,126 @@ namespace F5SnapshotSave
             return result;
         }
 
+        // The snapshot of the store as it is, or null with the reason in error (QuickSave.TrySave uses CaptureOutcome).
         internal static Captured Capture(PlayerStore store, EmporiumEntry entry, bool withCounter, string dialogState, out string error)
         {
-            error = null;
-            var cap = new Captured { HasCounter = withCounter, DialogState = withCounter ? dialogState : DialogNone };
-            var ctx = SnapshotContext.Create();
-            var w = new GraphWriter(ctx);
+            Outcome outcome = CaptureOutcome(store, entry, withCounter, dialogState);
+            error = outcome.Error;
+            return outcome.Snapshot;
+        }
+
+        // 0.8.0 (plan 3.3 to 3.6, 3.10): an object that cannot be stored no longer ends the whole save. Each failure is
+        // assigned by the start of its path to the customer that first reached the object: a waiting customer is left
+        // out of the snapshot and the snapshot is written again, until nothing fails; something of the counter group
+        // refuses the save with the counter text as before, a chemical feedback customer with the feedback text. Then the
+        // read-back check runs as before; when it fails, each feedback customer and each stored waiting customer is
+        // written and read back alone, failing waiting customers are left out and everything starts again, a failing
+        // feedback customer refuses the save, and with nobody to leave out the save is refused as before. The mods whose
+        // types caused a failure are collected for the window that names them.
+        internal static Outcome CaptureOutcome(PlayerStore store, EmporiumEntry entry, bool withCounter, string dialogState)
+        {
+            var outcome = new Outcome();
+            SnapshotSchema.CheckGame();
+            AdapterSet adapters = SpecAdapters.Collect();
+
             StoreClientManager manager = store.storeClientManager;
-            w.AddRootList("queue", manager != null && manager.clientStack != null ? manager.clientStack : new List<StoreClient>());
-            w.AddRootList("feedback", manager != null && manager.chemicalFeedbackStack != null ? manager.chemicalFeedbackStack : new List<StoreClient>());
-            cap.Waiting = manager != null && manager.clientStack != null ? manager.clientStack.Count : 0;
+            List<StoreClient> waiting = WithoutNull(manager != null ? manager.clientStack : null);
+            List<StoreClient> feedback = WithoutNull(manager != null ? manager.chemicalFeedbackStack : null);
+            var excluded = new HashSet<object>(ReferenceComparer.Instance);
+            while (true)
+            {
+                var stored = new List<StoreClient>();
+                foreach (StoreClient c in waiting)
+                {
+                    if (!excluded.Contains(c))
+                        stored.Add(c);
+                }
+                GraphWriter w;
+                Captured cap = Write(store, entry, withCounter, dialogState, waiting, stored, feedback, excluded, adapters, out w);
+                if (w.Failures.Count > 0)
+                {
+                    var failing = new SortedDictionary<int, WriteFailure>();
+                    WriteFailure counterFailure = null, feedbackFailure = null;
+                    int feedbackIndex = -1;
+                    foreach (WriteFailure f in w.Failures)
+                    {
+                        AddMod(outcome.Mods, f.Mod);
+                        int i;
+                        if (RootIndex(f.Path, QueueRoot, out i) && i < stored.Count)
+                        {
+                            if (!failing.ContainsKey(i))
+                                failing[i] = f;
+                        }
+                        else if (RootIndex(f.Path, FeedbackRoot, out i))
+                        {
+                            if (feedbackFailure == null)
+                            {
+                                feedbackFailure = f;
+                                feedbackIndex = i;
+                            }
+                        }
+                        else if (counterFailure == null)
+                            counterFailure = f;
+                    }
+                    if (counterFailure != null)
+                        return Refuse(outcome, withCounter ? Refusal.Counter : Refusal.Queue,
+                            (withCounter ? "the customer at the counter: " : "") + string.Join("; ", w.Errors.GetRange(0, Math.Min(10, w.Errors.Count)).ToArray()));
+                    if (feedbackFailure != null)
+                        return Refuse(outcome, Refusal.Feedback, "chemical feedback customer " + feedbackIndex + " '"
+                            + (feedbackIndex >= 0 && feedbackIndex < feedback.Count ? feedback[feedbackIndex].identifier : "?") + "': " + Describe(feedbackFailure));
+                    foreach (KeyValuePair<int, WriteFailure> pair in failing)
+                        Exclude(excluded, waiting, stored[pair.Key], Describe(pair.Value));
+                    continue;
+                }
+
+                // Read the snapshot back at once (items stored with the item encoding are not decoded here), so that a
+                // snapshot that cannot be rebuilt on this game version is never written.
+                var check = new GraphReader(SnapshotContext.Create(adapters), true);
+                if (check.Read(cap.Graph))
+                {
+                    cap.Excluded = excluded.Count;
+                    outcome.Snapshot = cap;
+                    LogMods(outcome.Mods);
+                    return outcome;
+                }
+                string readBack = "read-back check: " + string.Join("; ", check.Errors.GetRange(0, Math.Min(10, check.Errors.Count)).ToArray());
+                for (int i = 0; i < feedback.Count; i++)
+                {
+                    string problem;
+                    if (!ReadsBackAlone(FeedbackRoot, feedback[i], adapters, outcome.Mods, out problem))
+                        return Refuse(outcome, Refusal.Feedback, "chemical feedback customer " + i + " '" + feedback[i].identifier + "': " + problem);
+                }
+                bool any = false;
+                foreach (StoreClient c in stored)
+                {
+                    string problem;
+                    if (!ReadsBackAlone(QueueRoot, c, adapters, outcome.Mods, out problem))
+                    {
+                        Exclude(excluded, waiting, c, problem);
+                        any = true;
+                    }
+                }
+                if (!any)
+                {
+                    foreach (Assembly a in check.FailedAssemblies)
+                        AddMod(outcome.Mods, ModOf(a));
+                    return Refuse(outcome, withCounter ? Refusal.Counter : Refusal.Queue, readBack);
+                }
+            }
+        }
+
+        // One writing of the snapshot without the excluded waiting customers. The roots are written in this order: the
+        // stored waiting customers, the feedback customers, the counter group, the line (SlotsRoot); an object shared by
+        // several of them belongs to the first that reaches it. Up to 0.7.1 the portraits of CorpPresence visitors followed
+        // as the root corpPortraits; 0.8.0 no longer supports CorpPresence (T-029).
+        private static Captured Write(PlayerStore store, EmporiumEntry entry, bool withCounter, string dialogState, List<StoreClient> waiting,
+            List<StoreClient> stored, List<StoreClient> feedback, HashSet<object> excluded, AdapterSet adapters, out GraphWriter writer)
+        {
+            var cap = new Captured { HasCounter = withCounter, DialogState = withCounter ? dialogState : DialogNone, Waiting = waiting.Count };
+            var w = new GraphWriter(SnapshotContext.Create(adapters));
+            writer = w;
+            w.AddRootList(QueueRoot, stored);
+            w.AddRootList(FeedbackRoot, feedback);
 
             if (withCounter)
             {
@@ -185,36 +334,129 @@ namespace F5SnapshotSave
                 cap.Sprite = SpriteKeyOf(store.currentClientInstance);
             }
 
-            // The portraits CorpPresence registered for the visitors of this snapshot; no root when there are none.
-            var visitors = new List<StoreClient>();
-            if (manager != null && manager.clientStack != null)
-                visitors.AddRange(manager.clientStack);
-            if (manager != null && manager.chemicalFeedbackStack != null)
-                visitors.AddRange(manager.chemicalFeedbackStack);
-            if (withCounter && store.currentClientInstance != null)
-                visitors.Add(store.currentClientInstance.GetClientBlueprint());
-            List<string> portraits = CorpLink.PortraitPairs(visitors);
-            if (portraits.Count > 0)
-                w.AddRootList(PortraitsRoot, portraits);
+            var slots = new List<object>();
+            int index = 0;
+            foreach (StoreClient c in waiting)
+            {
+                if (excluded.Contains(c))
+                    slots.Add(CustomerQueue.Encode(new List<StoreClient> { c }));
+                else
+                    slots.Add(index++);
+            }
+            w.AddRootList(SlotsRoot, slots);
 
-            string text = w.Finish();
+            cap.Graph = w.Finish();
             cap.Objects = w.ObjectCount;
-            if (w.Errors.Count > 0)
-            {
-                error = string.Join("; ", w.Errors.GetRange(0, Math.Min(10, w.Errors.Count)).ToArray());
-                return null;
-            }
-
-            // Read the snapshot back at once (items stored with the item encoding are not decoded here), so that a
-            // snapshot that cannot be rebuilt on this game version is never written.
-            var check = new GraphReader(SnapshotContext.Create(), true);
-            if (!check.Read(text))
-            {
-                error = "read-back check: " + string.Join("; ", check.Errors.GetRange(0, Math.Min(10, check.Errors.Count)).ToArray());
-                return null;
-            }
-            cap.Graph = text;
             return cap;
+        }
+
+        // Writes one customer alone and reads it back, as the whole snapshot is read back.
+        private static bool ReadsBackAlone(string root, StoreClient client, AdapterSet adapters, List<string> mods, out string problem)
+        {
+            problem = null;
+            var w = new GraphWriter(SnapshotContext.Create(adapters));
+            w.AddRootList(root, new List<StoreClient> { client });
+            string text = w.Finish();
+            if (w.Failures.Count > 0)
+            {
+                foreach (WriteFailure f in w.Failures)
+                    AddMod(mods, f.Mod);
+                problem = string.Join("; ", w.Errors.GetRange(0, Math.Min(5, w.Errors.Count)).ToArray());
+                return false;
+            }
+            var check = new GraphReader(SnapshotContext.Create(adapters), true);
+            if (check.Read(text))
+                return true;
+            foreach (Assembly a in check.FailedAssemblies)
+                AddMod(mods, ModOf(a));
+            problem = "read-back check: " + string.Join("; ", check.Errors.GetRange(0, Math.Min(5, check.Errors.Count)).ToArray());
+            return false;
+        }
+
+        private static List<StoreClient> WithoutNull(List<StoreClient> clients)
+        {
+            var list = new List<StoreClient>();
+            if (clients != null)
+            {
+                foreach (StoreClient c in clients)
+                {
+                    if (c != null)
+                        list.Add(c);
+                }
+            }
+            return list;
+        }
+
+        // The index of the root list entry a path starts in: 3 for "queue[3].mainDialogue" and root "queue".
+        private static bool RootIndex(string path, string root, out int index)
+        {
+            index = -1;
+            if (path == null || !path.StartsWith(root + "[", StringComparison.Ordinal))
+                return false;
+            int start = root.Length + 1;
+            int close = path.IndexOf(']', start);
+            return close > start && int.TryParse(path.Substring(start, close - start), NumberStyles.None, CultureInfo.InvariantCulture, out index);
+        }
+
+        private static void Exclude(HashSet<object> excluded, List<StoreClient> waiting, StoreClient client, string reason)
+        {
+            excluded.Add(client);
+            int position = -1;
+            for (int i = 0; i < waiting.Count; i++)
+            {
+                if (ReferenceEquals(waiting[i], client))
+                    position = i;
+            }
+            UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "waiting customer " + position + " '" + client.identifier
+                + "' left out of the snapshot; it is created again by identifier after loading: " + reason);
+        }
+
+        private static string Describe(WriteFailure f)
+        {
+            string text = f.Path + ": " + f.Message;
+            if (f.Type != null)
+                text += " [" + (f.Type.FullName ?? f.Type.Name) + ", " + f.Type.Assembly.GetName().Name + (f.Mod != null ? ", mod " + f.Mod : "") + "]";
+            else if (f.Mod != null)
+                text += " [mod " + f.Mod + "]";
+            return text;
+        }
+
+        private static Outcome Refuse(Outcome outcome, Refusal refusal, string error)
+        {
+            outcome.Snapshot = null;
+            outcome.Refused = refusal;
+            outcome.Error = error;
+            LogMods(outcome.Mods);
+            return outcome;
+        }
+
+        // The mod of an assembly, for the window naming incompatible mods; the game, the framework and this mod are not named.
+        private static string ModOf(Assembly a)
+        {
+            try
+            {
+                return a != null ? ModLoader.ModIdOfAssembly(a) : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static void AddMod(List<string> mods, string mod)
+        {
+            if (!string.IsNullOrEmpty(mod) && mod != F5SnapshotSaveMod.ModId && !mods.Contains(mod))
+                mods.Add(mod);
+        }
+
+        private static void LogMods(List<string> mods)
+        {
+            if (mods.Count == 0)
+                return;
+            var names = new List<string>();
+            foreach (string mod in mods)
+                names.Add(mod + " (" + IncompatibleNotice.DisplayName(mod) + ")");
+            UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "mods whose objects could not be stored in this F5 save: " + string.Join(", ", names.ToArray()));
         }
 
         // The sprite shown for the customer: GetNextClient shows SpriteDict.ShowClientSprite(client.GetSprite()), but
@@ -341,33 +583,29 @@ namespace F5SnapshotSave
             return true;
         }
 
-        // Reads the snapshot of the save that was loaded, in ModHook.OnGameLoadedLate. A snapshot that points at state
-        // of an integration mod is not rebuilt here (Restored.Later).
+        // Reads the snapshot of the save that was loaded, in ModHook.OnGameLoadedLate, with the adapters collected for
+        // this read. Up to 0.7.1 a snapshot that pointed at the state of CorpPresence was read on the first shutter update
+        // instead; 0.8.0 no longer supports CorpPresence (T-029, yzz 2026-11-12) and does not read such a snapshot.
         internal static Restored Read(out List<string> errors)
         {
-            return ReadStored(Take(), true, out errors);
+            return ReadStored(Take(), SpecAdapters.Collect(), out errors);
         }
 
-        // later: whether a snapshot that points at state of an integration mod is left for a second call. CorpPresence
-        // drops its state objects when PlayerStore.LoadGame returns (its Hooks.AfterLoadGame), which is after
-        // ModHook.OnGameLoadedLate; a visitor rebuilt before that would point at objects CorpPresence no longer uses.
-        internal static Restored ReadStored(Stored stored, bool later, out List<string> errors)
+        internal static Restored ReadStored(Stored stored, AdapterSet adapters, out List<string> errors)
         {
             errors = new List<string>();
             string format = stored.Format;
-            if (format != "1" && format != Codec.Format.ToString(CultureInfo.InvariantCulture))
+            if (!Codec.Accepts(format))
             {
                 errors.Add("unknown snapshot format " + format);
                 return null;
             }
-            var reader = new GraphReader(SnapshotContext.Create(), false, later);
+            var reader = new GraphReader(SnapshotContext.Create(adapters), false);
             if (!reader.Read(stored.Graph))
             {
                 errors.AddRange(reader.Errors);
                 return null;
             }
-            if (reader.Deferred)
-                return new Restored { Later = stored, DialogState = stored.Dialog };
             foreach (string warning in reader.Warnings)
                 UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + warning);
 
@@ -378,20 +616,27 @@ namespace F5SnapshotSave
                 BargainOpen = stored.BargainOpen == "1",
                 Sprite = stored.Sprite,
             };
-            foreach (object o in reader.Root(PortraitsRoot))
-                r.Portraits.Add(o as string ?? "");
-            foreach (object o in reader.Root("queue"))
+            List<object> queue = reader.Root(QueueRoot);
+            foreach (object o in queue)
             {
                 var c = o as StoreClient;
                 if (c != null)
                     r.Queue.Add(c);
             }
-            foreach (object o in reader.Root("feedback"))
+            if (format == "3")
+                ReadSlots(reader, queue, r, errors);
+            else
+            {
+                foreach (StoreClient c in r.Queue)
+                    r.Slots.Add(new WaitingSlot { Client = c });
+            }
+            foreach (object o in reader.Root(FeedbackRoot))
             {
                 var c = o as StoreClient;
                 if (c != null)
                     r.Feedback.Add(c);
             }
+            r.Extras.AddRange(reader.Extras);
             r.Counter = reader.RootValue("counter") as StoreClientInstance;
             if (r.Counter != null)
             {
@@ -422,6 +667,130 @@ namespace F5SnapshotSave
             if (reader.Errors.Count > 0)
                 errors.AddRange(reader.Errors);
             return errors.Count == 0 ? r : null;
+        }
+
+        // Format 3: the line from SlotsRoot. Every entry of the queue root has exactly one place; a customer that was left
+        // out is kept as identifier data and created on the first shutter update, not now (CreateLeftOut).
+        private static void ReadSlots(GraphReader reader, List<object> queue, Restored r, List<string> errors)
+        {
+            if (!reader.HasRoot(SlotsRoot))
+            {
+                errors.Add(SlotsRoot + " missing");
+                return;
+            }
+            var used = new bool[queue.Count];
+            foreach (object slot in reader.Root(SlotsRoot))
+            {
+                if (slot is int)
+                {
+                    int i = (int)slot;
+                    StoreClient c = i >= 0 && i < queue.Count ? queue[i] as StoreClient : null;
+                    if (c == null || used[i])
+                    {
+                        errors.Add(SlotsRoot + ": no waiting customer " + i + " in the snapshot");
+                        continue;
+                    }
+                    used[i] = true;
+                    r.Slots.Add(new WaitingSlot { Client = c });
+                }
+                else if (slot is string)
+                {
+                    List<CustomerQueue.Entry> entries = CustomerQueue.Decode((string)slot);
+                    if (entries.Count > 1)
+                        errors.Add(SlotsRoot + ": more than one customer in one place");
+                    else if (entries.Count == 1)
+                        r.Slots.Add(new WaitingSlot { Entry = entries[0] });
+                    else
+                        UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "a waiting customer left out of the snapshot has no identifier; it does not come back");
+                }
+                else
+                    errors.Add(SlotsRoot + ": unexpected entry " + (slot == null ? "null" : slot.GetType().Name));
+            }
+            for (int i = 0; i < used.Length; i++)
+            {
+                if (!used[i])
+                    errors.Add(SlotsRoot + ": waiting customer " + i + " of the snapshot has no place in the line");
+            }
+        }
+
+        // 0.8.0 (plan 3.6, spec 4.4): the waiting customers rebuilt from the snapshot, in their order. They are put back on
+        // the first shutter update after the extra data has been given back; the customers left out of the snapshot are
+        // created after that (CreateLeftOut).
+        internal static List<StoreClient> RebuiltWaiting(Restored r)
+        {
+            var line = new List<StoreClient>();
+            foreach (WaitingSlot slot in r.Slots)
+            {
+                if (slot.Client != null)
+                    line.Add(slot.Client);
+            }
+            return line;
+        }
+
+        // 0.8.0: creates the customers that were left out of the snapshot by identifier, each factory once per load, and puts
+        // each in its place in the line. Called when the rebuilt waiting customers are back at the front of the line (index
+        // 0 onwards of stack) and the customer at the counter is back: factories look at the store as it is, for example
+        // Gunsmith Expansion's pickup factory gives a customer only a reservation that no customer in the store or in the
+        // line holds yet (Reservations.SyncAssignments). Factories can also have side effects (Moneylending's borrowing
+        // visitor updates its ledger), and by now every mod's load handlers have run. A customer that cannot be created
+        // does not come back. Returns the number of customers created.
+        internal static int CreateLeftOut(Restored r, List<StoreClient> stack)
+        {
+            int placed = 0;
+            int created = 0;
+            foreach (WaitingSlot slot in r.Slots)
+            {
+                if (slot.Client != null)
+                {
+                    placed++;
+                    continue;
+                }
+                int failed;
+                List<StoreClient> made = CustomerQueue.CreateAll(new List<CustomerQueue.Entry> { slot.Entry }, out failed);
+                if (made.Count > 0)
+                {
+                    stack.Insert(Math.Min(placed, stack.Count), made[0]);
+                    placed++;
+                    created++;
+                    UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "created again by identifier: '" + slot.Entry.Identifier + "'");
+                }
+                else
+                    UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "the waiting customer '" + slot.Entry.Identifier + "' left out of the snapshot could not be created again; it does not come back");
+            }
+            return created;
+        }
+
+        // 0.8.0 (spec 3.6, 4.4): gives the extra data of the snapshot back to the mods that wrote it, on the first shutter
+        // update before any customer is created or put back and before the counter view is restored, with the adapters
+        // collected now. False when a provider has no adapter with loadExtra now or a loadExtra throws: the snapshot is then
+        // not used. What was given back before the failure sits in weak-keyed tables under objects of this snapshot, which
+        // are dropped with it (loadExtra contract, spec 3.1).
+        internal static bool GiveExtraBack(Restored r, out string problem)
+        {
+            problem = null;
+            if (r.Extras.Count == 0)
+                return true;
+            AdapterSet adapters = SpecAdapters.Collect();
+            foreach (ExtraValue extra in r.Extras)
+            {
+                Adapter adapter = adapters.For(extra.Provider);
+                if (adapter == null || adapter.LoadExtra == null)
+                {
+                    problem = "no adapter of " + extra.Provider.GetName().Name + " takes its extra data back";
+                    return false;
+                }
+                try
+                {
+                    adapter.LoadExtra(extra.Owner, extra.Value);
+                }
+                catch (Exception e)
+                {
+                    problem = "loadExtra of mod '" + adapter.Mod + "' threw: " + e;
+                    return false;
+                }
+            }
+            UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "extra data given back: " + r.Extras.Count + " record(s)");
+            return true;
         }
 
         // Puts the customer back at the counter as they were when F5 was pressed: arrived (no walk, no arrival

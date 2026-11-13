@@ -120,7 +120,8 @@ namespace GunsmithExpansion
             }
         }
 
-        private sealed class Courier
+        // Internal for F5 Quick Save Plus's extra data (F5SnapshotSpec), which keeps a courier's entry with his order.
+        internal sealed class Courier
         {
             internal int Batch;
         }
@@ -356,6 +357,19 @@ namespace GunsmithExpansion
         {
             Courier cr;
             return order != null && couriers.TryGetValue(order, out cr);
+        }
+
+        internal static Courier CourierOf(GunOrderData order)
+        {
+            Courier cr;
+            return order != null && couriers.TryGetValue(order, out cr) ? cr : null;
+        }
+
+        // The entry of an order that F5 Quick Save Plus made anew from its snapshot on load (F5SnapshotSpec.LoadExtra).
+        internal static void PutCourier(GunOrderData order, Courier courier)
+        {
+            couriers.Remove(order);
+            couriers.Add(order, courier);
         }
 
         // Before GunOrderData.OnOrderAccepted pays the gun.

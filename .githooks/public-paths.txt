@@ -33,3 +33,5 @@ open_beta/F5SnapshotSave/src/
 open_beta/F5SnapshotSave/manifest.xml
 open_beta/F5SnapshotSave/build.ps1
 open_beta/F5SnapshotSave/tools/generate_snapshot_schema.ps1
+F5SnapshotSave/tools/generate_spec_fields.ps1
+F5SnapshotSave/spec/

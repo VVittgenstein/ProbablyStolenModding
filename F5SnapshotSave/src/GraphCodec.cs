@@ -35,24 +35,34 @@ namespace F5SnapshotSave
     //   F  <id> <declaring type id> <name>
     //   M  <id> <declaring type id> <name> <parameter type ids> <generic argument type ids>
     //   O  <id> <category> <type id> <payload...>
+    //   E  <object id> <provider assembly id> <spec version> <value>   extra data of a mod (format 3)
     //   R  <name> <values...>
     // Values: n null, b0/b1, c<char code>, i<type id>:<integer>, u<unsigned 64-bit>, f<float bits>, d<double bits>,
     // m<decimal>, s<string>, e<type id>:<enum value>, p<type id> (zero pointer), y<type id> (a Type), r<object id>.
     // Object categories: c class fields, s struct fields, P fields set on an existing object, a array, l List,
     // h HashSet, q Queue, k Stack, d Dictionary, v delegate, x existing object, g item by unique ID,
     // G item stored with the game's item encoding, u asset by name, w StringBuilder, o plain object,
-    // I StoreClientInstance, K the current session of CorpPresence (CorpLink).
-    // Existing objects are written as a path: S<type id>:<static field id> followed by steps: .<instance field id>,
-    // .a<array index>, .i<list index>, .k<dictionary key> (a string key, PathStep.EscapeKey).
+    // I StoreClientInstance, Y an object of a mod that follows the spec, found again by the key that mod gave (format 3,
+    // spec 3.5).
+    // Existing objects are written as a path: S<type id>:<static field id> followed by .<instance field id> steps.
+    // Up to 0.7.1 snapshots also had the category K (the current session of CorpPresence) and the path steps
+    // .a<array index>, .i<list index>, .k<dictionary key> (paths into the state of CorpPresence), with the root
+    // corpPortraits; 0.8.0 no longer supports CorpPresence (T-029, yzz 2026-11-12), and a snapshot with any of them is
+    // not read (the whole snapshot falls back).
     internal static class Codec
     {
         internal const string Magic = "F5SnapshotSave";
-        internal const int Format = 2;
+        // 0.8.0: format 3 adds the root queueSlots (Snapshot), key references (Y) and extra data (E). Formats 1 and 2 are
+        // still read; 0.7.1 and older read only 1 and 2, so they use the F5ForceSave-format queue for a format 3 save.
+        internal const int Format = 3;
         internal const BindingFlags DeclaredInstance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         internal const BindingFlags DeclaredStatic = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         internal const BindingFlags DeclaredMethods = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
 
-        private static readonly Dictionary<Type, List<SnapshotField>> fieldCache = new Dictionary<Type, List<SnapshotField>>();
+        internal static bool Accepts(string format)
+        {
+            return format == "1" || format == "2" || format == "3";
+        }
 
         internal static string Escape(string s)
         {
@@ -96,31 +106,6 @@ namespace F5SnapshotSave
                 }
             }
             return sb.ToString();
-        }
-
-        // Instance fields of a type and of its base types, constants excluded.
-        internal static List<SnapshotField> InstanceFields(Type t)
-        {
-            List<SnapshotField> list;
-            if (fieldCache.TryGetValue(t, out list))
-                return list;
-            list = new List<SnapshotField>();
-            if (!SnapshotSchema.CanDescribe(t))
-                throw new NotSupportedException("no snapshot field schema for " + t.FullName);
-            for (Type cur = t; cur != null && cur != typeof(object) && cur != typeof(ValueType); cur = cur.BaseType)
-            {
-                if (!SnapshotSchema.CanDescribe(cur)) break;
-                foreach (SnapshotField f in SnapshotSchema.DeclaredFields(cur))
-                {
-                    if (!f.IsStatic)
-                        list.Add(f);
-                }
-            }
-            var names = new HashSet<string>();
-            foreach (SnapshotField field in list)
-                if (!names.Add(field.Name)) throw new NotSupportedException("hidden field cannot be addressed through ModReflect: " + t.FullName + "." + field.Name);
-            fieldCache[t] = list;
-            return list;
         }
 
         internal static bool IsFrameworkAssembly(Assembly a)
@@ -195,9 +180,31 @@ namespace F5SnapshotSave
         }
     }
 
+    // 0.8.0: an object the writer could not store, with the path where it was first reached (for example
+    // "queue[2].mainDialogue.endAction"), the type to blame and that type's mod (null for the game and the framework).
+    // Snapshot.CaptureOutcome assigns each failure to a customer by the start of its path.
+    internal sealed class WriteFailure
+    {
+        internal string Path;
+        internal Type Type;
+        internal string Mod;
+        internal string Message;
+    }
+
+    // 0.8.0: extra data of a mod that follows the spec, rebuilt with a snapshot (spec 3.6): the game object it belongs to,
+    // the value, and the assembly of the mod that gives it back with its loadExtra function.
+    internal sealed class ExtraValue
+    {
+        internal Assembly Provider;
+        internal object Owner;
+        internal object Value;
+    }
+
     internal sealed class GraphWriter
     {
         internal readonly List<string> Errors = new List<string>();
+        // The same failures with the type to blame (0.8.0).
+        internal readonly List<WriteFailure> Failures = new List<WriteFailure>();
         internal readonly Dictionary<string, int> TypeCounts = new Dictionary<string, int>();
         private readonly SnapshotContext ctx;
 
@@ -210,6 +217,7 @@ namespace F5SnapshotSave
         private readonly List<string> fieldLines = new List<string>();
         private readonly List<string> methodLines = new List<string>();
         private readonly List<string> objectLines = new List<string>();
+        private readonly List<string> extraLines = new List<string>();
         private readonly List<string> rootLines = new List<string>();
 
         private readonly Dictionary<object, int> ids = new Dictionary<object, int>(ReferenceComparer.Instance);
@@ -217,11 +225,14 @@ namespace F5SnapshotSave
         private readonly List<string> paths = new List<string>();
         private readonly Queue<int> pending = new Queue<int>();
         private int nextId;
+        // The assembly the reader takes for a name (GraphReader.ResolveTables): the first loaded assembly of that name.
+        private Dictionary<string, Assembly> loadedByName;
+        // Types the reader would not find, with the reason (CheckFound), so that each is looked up once per writing.
+        private readonly Dictionary<Type, string> notFound = new Dictionary<Type, string>();
 
         internal GraphWriter(SnapshotContext ctx)
         {
             this.ctx = ctx;
-            ctx.LinkModState();
         }
 
         internal int ObjectCount { get { return nextId; } }
@@ -234,7 +245,7 @@ namespace F5SnapshotSave
             {
                 foreach (object v in values)
                 {
-                    tokens.Add(Value(v, name + "[" + i + "]"));
+                    tokens.Add(SafeValue(v, name + "[" + i + "]"));
                     i++;
                 }
             }
@@ -250,20 +261,31 @@ namespace F5SnapshotSave
         // Writes the given fields of an existing object (found again by path when reading) and a root naming it.
         internal void AddPartialRoot(string name, object target, IEnumerable<SnapshotField> fields)
         {
-            string path;
-            if (target == null || !TryPath(target, out path))
+            int id;
+            try
             {
-                Errors.Add(name + ": no path to " + (target == null ? "null" : target.GetType().FullName));
+                string path;
+                if (target == null || !TryPath(target, out path))
+                {
+                    Fail(name, target == null ? null : target.GetType(), null, "no path to " + (target == null ? "null" : target.GetType().FullName));
+                    return;
+                }
+                // 0.8.0: every type of the chain needs a field table, as for any object whose fields are copied.
+                ctx.CopyFields(target.GetType());
+                id = nextId++;
+                objects.Add(target);
+                paths.Add(name);
+                var sb = new StringBuilder();
+                sb.Append("O\t").Append(id).Append("\tP\t").Append(TypeId(target.GetType())).Append('\t').Append(path);
+                foreach (SnapshotField f in fields)
+                    sb.Append('\t').Append(FieldId(f)).Append('=').Append(SafeValue(f.GetValue(ctx, target), name + "." + f.Name));
+                objectLines.Add(sb.ToString());
+            }
+            catch (Exception e)
+            {
+                Fail(name, target == null ? null : target.GetType(), e);
                 return;
             }
-            int id = nextId++;
-            objects.Add(target);
-            paths.Add(name);
-            var sb = new StringBuilder();
-            sb.Append("O\t").Append(id).Append("\tP\t").Append(TypeId(target.GetType())).Append('\t').Append(path);
-            foreach (SnapshotField f in fields)
-                sb.Append('\t').Append(FieldId(f)).Append('=').Append(Value(f.GetValue(target), name + "." + f.Name));
-            objectLines.Add(sb.ToString());
             Flush();
             rootLines.Add("R\t" + name + "\tr" + id);
         }
@@ -273,7 +295,7 @@ namespace F5SnapshotSave
             Flush();
             var sb = new StringBuilder();
             sb.Append("H\t").Append(Codec.Magic).Append('\t').Append(Codec.Format).Append('\n');
-            foreach (List<string> block in new[] { asmLines, typeLines, fieldLines, methodLines, objectLines, rootLines })
+            foreach (List<string> block in new[] { asmLines, typeLines, fieldLines, methodLines, objectLines, extraLines, rootLines })
             {
                 foreach (string line in block)
                     sb.Append(line).Append('\n');
@@ -281,13 +303,61 @@ namespace F5SnapshotSave
             return sb.ToString();
         }
 
+        // 0.8.0: an object that cannot be written is recorded with its path, type, assembly and mod, and the writer goes
+        // on with the next object. Up to 0.7.1 the first such object ended the whole save.
         private void Flush()
         {
             while (pending.Count > 0)
             {
                 int id = pending.Dequeue();
-                WriteBody(id, objects[id], paths[id]);
+                object o = objects[id];
+                string path = paths[id];
+                try
+                {
+                    WriteBody(id, o, path);
+                }
+                catch (Exception e)
+                {
+                    Fail(path, o.GetType(), e);
+                }
             }
+        }
+
+        private void Fail(string path, Type culprit, Exception e)
+        {
+            var typed = e as SnapshotTypeException;
+            if (typed != null)
+                Fail(path, typed.Culprit ?? culprit, null, e.Message);
+            else
+                Fail(path, culprit, null, e.GetType().Name + ": " + e.Message);
+        }
+
+        private void Fail(string path, Type culprit, string mod, string message)
+        {
+            if (mod == null && culprit != null)
+            {
+                try
+                {
+                    mod = ModLoader.ModIdOfAssembly(culprit.Assembly);
+                }
+                catch (Exception)
+                {
+                    mod = null;
+                }
+            }
+            Failures.Add(new WriteFailure { Path = path, Type = culprit, Mod = mod, Message = message });
+            var sb = new StringBuilder();
+            sb.Append(path).Append(": ").Append(message);
+            if (culprit != null || mod != null)
+            {
+                sb.Append(" [");
+                if (culprit != null)
+                    sb.Append(culprit.FullName ?? culprit.Name).Append(", ").Append(culprit.Assembly.GetName().Name);
+                if (mod != null)
+                    sb.Append(culprit != null ? ", " : "").Append("mod ").Append(mod);
+                sb.Append(']');
+            }
+            Errors.Add(sb.ToString());
         }
 
         private void Count(Type t)
@@ -296,6 +366,21 @@ namespace F5SnapshotSave
             int c;
             TypeCounts.TryGetValue(n, out c);
             TypeCounts[n] = c + 1;
+        }
+
+        // Value, with a failure recorded at this path (a type that would not be found when loading, for example the type
+        // of an enum value) and null written in its place.
+        private string SafeValue(object v, string path)
+        {
+            try
+            {
+                return Value(v, path);
+            }
+            catch (Exception e)
+            {
+                Fail(path, v == null ? null : v.GetType(), e);
+                return "n";
+            }
         }
 
         internal string Value(object v, string path)
@@ -327,7 +412,7 @@ namespace F5SnapshotSave
                 {
                     bool zero = t == typeof(IntPtr) ? (IntPtr)v == IntPtr.Zero : (UIntPtr)v == UIntPtr.Zero;
                     if (!zero)
-                        Errors.Add(path + ": native pointer");
+                        Fail(path, t, null, "native pointer");
                     return "p" + TypeId(t);
                 }
                 return "i" + TypeId(t) + ":" + Codec.Int(Convert.ToInt64(v, CultureInfo.InvariantCulture));
@@ -356,44 +441,60 @@ namespace F5SnapshotSave
             int id = nextId++;
             objects.Add(box);
             paths.Add(path);
+            try
+            {
+                WriteStructBody(id, box, path);
+            }
+            catch (Exception e)
+            {
+                Fail(path, box.GetType(), e);
+            }
+            return id;
+        }
+
+        private void WriteStructBody(int id, object box, string path)
+        {
             Type t = box.GetType();
             Count(t);
-            var sb = new StringBuilder();
-            if (CorpLink.IsSession(t))
+            // 0.8.0, spec 3.5: a value of a type of a mod that follows the spec is asked for its key like an object of that
+            // mod (WriteObject); with a key only the key is written ('Y'), and find gives the value back. A value has no
+            // identity, so every occurrence gets a record of its own. Up to the second code review on 2026-11-12 values
+            // were always copied field by field.
+            Adapter keyed = ctx.Adapters.For(t.Assembly);
+            if (keyed != null && keyed.Key != null)
             {
-                // Taken again from CorpPresence after loading. A session that is not the current one belongs to a
-                // visitor whose actions no longer run; it cannot be given back as it is.
-                bool current = false;
-                try { current = CorpLink.SessionIsCurrent(box); }
-                catch (Exception e) { Errors.Add(path + ": " + e.GetType().Name); }
-                if (!current)
-                    Errors.Add(path + ": session of CorpPresence that is not the current one");
-                objectLines.Add("O\t" + id + "\tK\t" + TypeId(t));
-                return id;
+                string key = keyed.Key(box);
+                if (key != null)
+                {
+                    objectLines.Add("O\t" + id + "\tY\t" + TypeId(t) + "\t" + Codec.Escape(key));
+                    return;
+                }
             }
+            var sb = new StringBuilder();
             sb.Append("O\t").Append(id).Append("\ts\t").Append(TypeId(t));
             AppendFields(sb, box, t, path);
             objectLines.Add(sb.ToString());
-            return id;
         }
 
         private void AppendFields(StringBuilder sb, object o, Type t, string path)
         {
-            foreach (SnapshotField f in Codec.InstanceFields(t))
+            foreach (SnapshotField f in ctx.CopyFields(t))
             {
                 if (ctx.SkipField(f))
                     continue;
+                string at = path + "." + f.Name;
                 object fv;
                 try
                 {
-                    fv = f.GetValue(o);
+                    fv = f.GetValue(ctx, o);
                 }
                 catch (Exception e)
                 {
-                    Errors.Add(path + "." + f.Name + ": " + e.GetType().Name);
+                    Fail(at, t, e);
                     continue;
                 }
-                sb.Append('\t').Append(FieldId(f)).Append('=').Append(Value(fv, path + "." + f.Name));
+                string token = SafeValue(fv, at);
+                sb.Append('\t').Append(FieldId(f)).Append('=').Append(token);
             }
         }
 
@@ -413,13 +514,38 @@ namespace F5SnapshotSave
                     MethodInfo m = d.Method;
                     if (m == null || m.DeclaringType == null || m.GetType().Name.IndexOf("Dynamic", StringComparison.Ordinal) >= 0)
                     {
-                        Errors.Add(path + ": delegate to a generated method");
+                        Fail(path, t, null, "delegate to a generated method");
                         continue;
                     }
-                    sb.Append('\t').Append(MethodId(m)).Append('@').Append(Value(d.Target, path + ".Target"));
+                    int method;
+                    try
+                    {
+                        method = MethodId(m);
+                    }
+                    catch (Exception e)
+                    {
+                        Fail(path, m.DeclaringType, e);
+                        continue;
+                    }
+                    sb.Append('\t').Append(method).Append('@').Append(SafeValue(d.Target, path + ".Target"));
                 }
                 objectLines.Add(sb.ToString());
                 return;
+            }
+
+            // 0.8.0: an object of a mod that follows the spec is found again by the key that mod gives it, when it gives
+            // one (for example a catalog definition or a ledger record that has to stay the same object), instead of being
+            // copied (spec 3.5).
+            Adapter keyed = ctx.Adapters.For(t.Assembly);
+            if (keyed != null && keyed.Key != null)
+            {
+                string key = keyed.Key(o);
+                if (key != null)
+                {
+                    sb.Append("Y\t").Append(TypeId(t)).Append('\t').Append(Codec.Escape(key));
+                    objectLines.Add(sb.ToString());
+                    return;
+                }
             }
 
             var item = o as GameItem;
@@ -430,10 +556,15 @@ namespace F5SnapshotSave
                 if (ctx.TryItemReference(item, out uid))
                     sb.Append("g\t").Append(TypeId(t)).Append('\t').Append(uid.ToString(CultureInfo.InvariantCulture));
                 else if (ctx.TryEncodeItem(item, out json))
+                {
                     sb.Append("G\t").Append(TypeId(t)).Append('\t').Append(Codec.Escape(json));
+                    objectLines.Add(sb.ToString());
+                    WriteExtra(id, o, path);
+                    return;
+                }
                 else
                 {
-                    Errors.Add(path + ": item '" + item.identifier + "' could not be stored");
+                    Fail(path, t, null, "item '" + item.identifier + "' could not be stored");
                     return;
                 }
                 objectLines.Add(sb.ToString());
@@ -443,8 +574,9 @@ namespace F5SnapshotSave
             var instance = o as StoreClientInstance;
             if (instance != null)
             {
-                sb.Append("I\t").Append(TypeId(t)).Append('\t').Append(Value(instance.GetClientBlueprint(), path + ".storeClient"));
+                sb.Append("I\t").Append(TypeId(t)).Append('\t').Append(SafeValue(instance.GetClientBlueprint(), path + ".storeClient"));
                 objectLines.Add(sb.ToString());
+                WriteExtra(id, o, path);
                 return;
             }
 
@@ -480,7 +612,7 @@ namespace F5SnapshotSave
                     objectLines.Add(sb.ToString());
                 }
                 else
-                    Errors.Add(path + ": scene object " + t.FullName);
+                    Fail(path, t, null, "scene object " + t.FullName);
                 return;
             }
 
@@ -489,12 +621,12 @@ namespace F5SnapshotSave
                 var array = (Array)o;
                 if (array.Rank != 1)
                 {
-                    Errors.Add(path + ": array of rank " + array.Rank);
+                    Fail(path, t, null, "array of rank " + array.Rank);
                     return;
                 }
                 sb.Append("a\t").Append(TypeId(t)).Append('\t').Append(array.Length);
                 for (int i = 0; i < array.Length; i++)
-                    sb.Append('\t').Append(Value(array.GetValue(i), path + "[" + i + "]"));
+                    sb.Append('\t').Append(SafeValue(array.GetValue(i), path + "[" + i + "]"));
                 objectLines.Add(sb.ToString());
                 return;
             }
@@ -508,7 +640,8 @@ namespace F5SnapshotSave
                     string comparer = Codec.ComparerKind(o, t.GetGenericArguments()[0]);
                     if (comparer == null)
                     {
-                        Errors.Add(path + ": collection with a custom comparer");
+                        object custom = CollectionAccess.For(t).Comparer(o);
+                        Fail(path, custom != null ? custom.GetType() : t, null, "collection with a custom comparer");
                         return;
                     }
                     sb.Append('\t').Append(comparer);
@@ -518,8 +651,8 @@ namespace F5SnapshotSave
                 {
                     foreach (DictionaryEntry e in (IDictionary)o)
                     {
-                        sb.Append('\t').Append(Value(e.Key, path + "{key" + i + "}"));
-                        sb.Append('\t').Append(Value(e.Value, path + "{" + i + "}"));
+                        sb.Append('\t').Append(SafeValue(e.Key, path + "{key" + i + "}"));
+                        sb.Append('\t').Append(SafeValue(e.Value, path + "{" + i + "}"));
                         i++;
                     }
                 }
@@ -527,7 +660,7 @@ namespace F5SnapshotSave
                 {
                     foreach (object e in (IEnumerable)o)
                     {
-                        sb.Append('\t').Append(Value(e, path + "[" + i + "]"));
+                        sb.Append('\t').Append(SafeValue(e, path + "[" + i + "]"));
                         i++;
                     }
                 }
@@ -537,40 +670,52 @@ namespace F5SnapshotSave
 
             if (Codec.IsFrameworkAssembly(t.Assembly))
             {
-                Errors.Add(path + ": unsupported type " + t.FullName);
+                Fail(path, t, null, "unsupported type " + t.FullName);
                 return;
             }
 
             sb.Append("c\t").Append(TypeId(t));
             AppendFields(sb, o, t, path);
             objectLines.Add(sb.ToString());
+            WriteExtra(id, o, path);
+        }
+
+        // 0.8.0, spec 3.6: the extra data that the mods following the spec keep outside the customer objects for a game
+        // object that a snapshot creates anew when it is read: a 'c' object of a game type, a StoreClientInstance, an item
+        // stored with the game's item encoding. Each adapter with saveExtra is asked; a value is written as a graph value
+        // (shared references and cycles kept) with the provider's assembly, which gets an 'A' record with its module
+        // version id even when no type of the provider is in the graph, so a changed or missing provider makes the whole
+        // snapshot fall back when it is read, as any changed assembly of a snapshot does.
+        private void WriteExtra(int id, object o, string path)
+        {
+            if (o.GetType().Assembly != typeof(StoreClient).Assembly)
+                return;
+            foreach (Adapter adapter in ctx.Adapters.All)
+            {
+                if (adapter.SaveExtra == null)
+                    continue;
+                string at = path + "{extra " + adapter.Mod + "}";
+                object extra;
+                try
+                {
+                    extra = adapter.SaveExtra(o);
+                }
+                catch (Exception e)
+                {
+                    Fail(at, null, adapter.Mod, "saveExtra threw " + e.GetType().Name + ": " + e.Message);
+                    continue;
+                }
+                if (extra == null)
+                    continue;
+                string token = SafeValue(extra, at);
+                extraLines.Add("E\t" + id + "\t" + AsmId(adapter.Assembly) + "\t" + SpecAdapters.Version + "\t" + token);
+            }
         }
 
         private bool TryPath(object o, out string path)
         {
             SnapshotField holder;
             List<SnapshotField> chain;
-            int index;
-            if (SnapshotSchema.FindArrayReference(o, out holder, out index))
-            {
-                path = "S" + TypeId(holder.DeclaringType) + ":" + FieldId(holder) + ".a" + index;
-                return true;
-            }
-            PathStep[] steps;
-            if (ctx.TryFindModPath(o, out holder, out steps))
-            {
-                var mod = new StringBuilder();
-                mod.Append('S').Append(TypeId(holder.DeclaringType)).Append(':').Append(FieldId(holder));
-                foreach (PathStep step in steps)
-                {
-                    mod.Append('.');
-                    if (step.Kind == 'f') mod.Append(FieldId(step.Field));
-                    else if (step.Kind == 'k') mod.Append('k').Append(PathStep.EscapeKey(step.Key));
-                    else mod.Append(step.Kind).Append(step.Index.ToString(CultureInfo.InvariantCulture));
-                }
-                path = mod.ToString();
-                return true;
-            }
             if (!ctx.TryFindPath(o, out holder, out chain))
             {
                 path = null;
@@ -608,6 +753,7 @@ namespace F5SnapshotSave
             else if (t.IsGenericType && !t.IsGenericTypeDefinition)
             {
                 Type def = t.GetGenericTypeDefinition();
+                CheckFound(def);
                 Type[] args = t.GetGenericArguments();
                 var argIds = new string[args.Length];
                 for (int i = 0; i < args.Length; i++)
@@ -615,11 +761,64 @@ namespace F5SnapshotSave
                 line = "g\t" + AsmId(def.Assembly) + "\t" + Codec.Escape(def.FullName) + "\t" + string.Join(",", argIds);
             }
             else
+            {
+                CheckFound(t);
                 line = "n\t" + AsmId(t.Assembly) + "\t" + Codec.Escape(t.FullName);
+            }
             id = typeIds.Count;
             typeIds[t] = id;
             typeLines.Add("T\t" + id + "\t" + line);
             return id;
+        }
+
+        // 0.8.0: the lookup GraphReader runs for an 'n' or 'g' type record (the first loaded assembly of the recorded
+        // name, then SnapshotSchema.ResolveType), run when the type is recorded. A type the reader would not find, for
+        // example a type of a mod that is neither the game, this mod, one of its prerequisites nor a mod following the
+        // spec, makes the object holding it not storable now; up to 0.7.1 such a type (in a delegate, an enum value or a
+        // Type value) passed the writer and failed the read-back check.
+        private void CheckFound(Type t)
+        {
+            string message;
+            if (notFound.TryGetValue(t, out message))
+                throw new SnapshotTypeException(t, message);
+            string name = t.FullName;
+            string problem = null;
+            Type found = null;
+            try
+            {
+                string assembly = t.Assembly.GetName().Name;
+                if (LoadedByName(assembly) != t.Assembly)
+                    problem = "another loaded assembly has the name " + assembly;
+                else
+                    found = SnapshotSchema.ResolveType(t.Assembly, name, ctx.Adapters);
+            }
+            catch (Exception e)
+            {
+                problem = e.Message;
+            }
+            if (problem == null && found != t)
+                problem = "it is found as " + (found == null ? "nothing" : found.AssemblyQualifiedName);
+            if (problem == null)
+                return;
+            message = "type " + (name ?? t.Name) + " cannot be found when loading: " + problem;
+            notFound[t] = message;
+            throw new SnapshotTypeException(t, message);
+        }
+
+        private Assembly LoadedByName(string name)
+        {
+            if (loadedByName == null)
+            {
+                loadedByName = new Dictionary<string, Assembly>();
+                foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    string n = a.GetName().Name;
+                    if (!loadedByName.ContainsKey(n))
+                        loadedByName[n] = a;
+                }
+            }
+            Assembly found;
+            return loadedByName.TryGetValue(name, out found) ? found : null;
         }
 
         internal int FieldId(SnapshotField f)
@@ -641,17 +840,39 @@ namespace F5SnapshotSave
                 return id;
             int declaring = TypeId(m.DeclaringType);
             ParameterInfo[] ps = m.GetParameters();
+            var pTypes = new Type[ps.Length];
             var pIds = new string[ps.Length];
             for (int i = 0; i < ps.Length; i++)
-                pIds[i] = TypeId(ps[i].ParameterType).ToString(CultureInfo.InvariantCulture);
+            {
+                pTypes[i] = ps[i].ParameterType;
+                pIds[i] = TypeId(pTypes[i]).ToString(CultureInfo.InvariantCulture);
+            }
             Type[] gargs = m.IsGenericMethod ? m.GetGenericArguments() : Type.EmptyTypes;
             var gIds = new string[gargs.Length];
             for (int i = 0; i < gargs.Length; i++)
                 gIds[i] = TypeId(gargs[i]).ToString(CultureInfo.InvariantCulture);
+            CheckFound(m, pTypes, gargs);
             id = methodIds.Count;
             methodIds[m] = id;
             methodLines.Add("M\t" + id + "\t" + declaring + "\t" + Codec.Escape(m.Name) + "\t" + string.Join(",", pIds) + "\t" + string.Join(",", gIds));
             return id;
+        }
+
+        // 0.8.0: the lookup GraphReader.ResolveMethod runs for an 'M' record, run when the method is recorded; the method
+        // found must be declared in the same type, under the same name and with the same parameter types.
+        private void CheckFound(MethodInfo m, Type[] parameters, Type[] genericArguments)
+        {
+            MethodInfo found;
+            try
+            {
+                found = SnapshotSchema.ResolveMethod(m.DeclaringType, m.Name, parameters, genericArguments, ctx.Adapters);
+            }
+            catch (Exception e)
+            {
+                throw new SnapshotTypeException(m.DeclaringType, "method " + m.DeclaringType.FullName + "." + m.Name + " cannot be found when loading: " + e.Message);
+            }
+            if (found != m && (found == null || found.DeclaringType != m.DeclaringType || found.Name != m.Name))
+                throw new SnapshotTypeException(m.DeclaringType, "method " + m.DeclaringType.FullName + "." + m.Name + " is found as another method when loading");
         }
     }
 
@@ -660,6 +881,10 @@ namespace F5SnapshotSave
         internal readonly List<string> Errors = new List<string>();
         internal readonly List<string> Warnings = new List<string>();
         internal readonly List<string> ChangedAssemblies = new List<string>();
+        // 0.8.0: the extra data of the snapshot, rebuilt with it and given back later (Snapshot.GiveExtraBack).
+        internal readonly List<ExtraValue> Extras = new List<ExtraValue>();
+        // 0.8.0: assemblies of the types that could not be read, so that a failed read-back check can name their mods.
+        internal readonly HashSet<Assembly> FailedAssemblies = new HashSet<Assembly>();
         private readonly SnapshotContext ctx;
         private readonly bool dryRun;
 
@@ -668,6 +893,7 @@ namespace F5SnapshotSave
         private readonly Dictionary<int, string[]> fieldRecords = new Dictionary<int, string[]>();
         private readonly Dictionary<int, string[]> methodRecords = new Dictionary<int, string[]>();
         private readonly SortedDictionary<int, string[]> objectRecords = new SortedDictionary<int, string[]>();
+        private readonly List<string[]> extraRecords = new List<string[]>();
         private readonly Dictionary<string, string[]> rootRecords = new Dictionary<string, string[]>();
 
         private readonly Dictionary<int, Assembly> asms = new Dictionary<int, Assembly>();
@@ -677,25 +903,18 @@ namespace F5SnapshotSave
         private readonly Dictionary<int, object> objs = new Dictionary<int, object>();
         private readonly HashSet<int> structsFilled = new HashSet<int>();
         private readonly HashSet<int> inProgress = new HashSet<int>();
-        // Objects created through a constructor that takes some of their fields (CorpLink.ConstructorFields).
-        private readonly HashSet<int> byConstructor = new HashSet<int>();
 
-        // Set by Read when the snapshot points at state that an integration mod replaces after loading
-        // (CorpLink.IsStateRoot, or a session of CorpPresence).
-        internal bool UsesModState;
-        // Set by Read when such a snapshot was found and nothing was built (deferModState).
-        internal bool Deferred;
-        private readonly bool deferModState;
+        // The root in which F5 Quick Save Plus up to 0.7.1 stored the portraits of CorpPresence visitors. 0.8.0 no longer
+        // supports CorpPresence (T-029, yzz 2026-11-12) and does not read a snapshot that has this root: its visitors
+        // would come back without their portraits.
+        private const string CorpPortraitsRoot = "corpPortraits";
 
         // dryRun: everything is resolved and built, but items stored with the game's encoding are not decoded
         // (the field gets null). Used to check a snapshot right after writing it.
-        // deferModState: a snapshot that points at state of an integration mod is only parsed; Read returns true with
-        // Deferred set, and the snapshot is read again when that state is in place.
-        internal GraphReader(SnapshotContext ctx, bool dryRun, bool deferModState = false)
+        internal GraphReader(SnapshotContext ctx, bool dryRun)
         {
             this.ctx = ctx;
             this.dryRun = dryRun;
-            this.deferModState = deferModState;
         }
 
         internal bool Read(string text)
@@ -705,25 +924,18 @@ namespace F5SnapshotSave
                 Parse(text);
                 if (Errors.Count > 0)
                     return false;
+                if (rootRecords.ContainsKey(CorpPortraitsRoot))
+                {
+                    Errors.Add("the snapshot holds portraits of CorpPresence visitors (root " + CorpPortraitsRoot + ", written up to 0.7.1); CorpPresence is no longer supported");
+                    return false;
+                }
                 ResolveTables();
                 if (Errors.Count > 0)
                     return false;
-                UsesModState = FindModState();
-                if (UsesModState && deferModState)
-                {
-                    Deferred = true;
-                    return true;
-                }
-                if (UsesModState)
-                    ctx.LinkModState();
                 CreateObjects();
                 if (Errors.Count > 0)
                     return false;
                 BindReadonlyFields();
-                if (Errors.Count > 0)
-                    return false;
-                foreach (int id in new List<int>(byConstructor))
-                    EnsureConstructed(id);
                 if (Errors.Count > 0)
                     return false;
                 foreach (KeyValuePair<int, string[]> r in objectRecords)
@@ -753,6 +965,9 @@ namespace F5SnapshotSave
                     if (cat == "a" || cat == "l" || cat == "h" || cat == "q" || cat == "k" || cat == "d")
                         FillCollection(r.Key, r.Value);
                 }
+                if (Errors.Count > 0)
+                    return false;
+                ReadExtras();
             }
             catch (Exception e)
             {
@@ -766,29 +981,10 @@ namespace F5SnapshotSave
             return rootRecords.ContainsKey(name);
         }
 
-        private bool FindModState()
+        private void Blame(Type t)
         {
-            foreach (KeyValuePair<int, string[]> r in objectRecords)
-            {
-                string[] p = r.Value;
-                if (p.Length < 4)
-                    continue;
-                if (p[2] == "K")
-                    return true;
-                if ((p[2] != "x" && p[2] != "P") || p.Length < 5 || p[4].Length < 2 || p[4][0] != 'S')
-                    continue;
-                string head = p[4].Substring(1);
-                int dot = head.IndexOf('.');
-                if (dot >= 0)
-                    head = head.Substring(0, dot);
-                int colon = head.IndexOf(':');
-                SnapshotField holder;
-                int id;
-                if (colon > 0 && int.TryParse(head.Substring(colon + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out id)
-                    && fields.TryGetValue(id, out holder) && CorpLink.IsStateRoot(holder))
-                    return true;
-            }
-            return false;
+            if (t != null)
+                FailedAssemblies.Add(t.Assembly);
         }
 
         internal List<object> Root(string name)
@@ -817,7 +1013,7 @@ namespace F5SnapshotSave
                 return;
             }
             string[] header = lines[0].Split('\t');
-            if (header.Length < 3 || (header[2] != "1" && header[2] != Codec.Format.ToString(CultureInfo.InvariantCulture)))
+            if (header.Length < 3 || !Codec.Accepts(header[2]))
             {
                 Errors.Add("unknown snapshot format " + (header.Length > 2 ? header[2] : "?"));
                 return;
@@ -835,6 +1031,7 @@ namespace F5SnapshotSave
                     case "F": fieldRecords[Codec.ParseInt(p[1])] = p; break;
                     case "M": methodRecords[Codec.ParseInt(p[1])] = p; break;
                     case "O": objectRecords[Codec.ParseInt(p[1])] = p; break;
+                    case "E": extraRecords.Add(p); break;
                     case "R": rootRecords[p[1]] = p; break;
                     default: Errors.Add("unknown record " + p[0]); return;
                 }
@@ -875,9 +1072,22 @@ namespace F5SnapshotSave
                 if (t == null)
                     continue;
                 string name = Codec.Unescape(r.Value[3]);
-                SnapshotField f = SnapshotSchema.Field(t, name);
+                SnapshotField f;
+                try
+                {
+                    f = SnapshotSchema.Field(t, name, ctx.Adapters);
+                }
+                catch (Exception e)
+                {
+                    Errors.Add("field " + t.FullName + "." + name + ": " + e.Message);
+                    Blame(t);
+                    continue;
+                }
                 if (f == null)
+                {
                     Errors.Add("field " + t.FullName + "." + name + " not found");
+                    Blame(t);
+                }
                 else
                     fields[r.Key] = f;
             }
@@ -896,15 +1106,18 @@ namespace F5SnapshotSave
                 Errors.Add("type " + id + " missing");
                 return null;
             }
+            Assembly recorded = null;
             try
             {
                 switch (r[2])
                 {
                     case "n":
-                        t = SnapshotSchema.ResolveType(asms[Codec.ParseInt(r[3])], Codec.Unescape(r[4]));
+                        recorded = asms[Codec.ParseInt(r[3])];
+                        t = SnapshotSchema.ResolveType(recorded, Codec.Unescape(r[4]), ctx.Adapters);
                         break;
                     case "g":
-                        Type def = SnapshotSchema.ResolveType(asms[Codec.ParseInt(r[3])], Codec.Unescape(r[4]));
+                        recorded = asms[Codec.ParseInt(r[3])];
+                        Type def = SnapshotSchema.ResolveType(recorded, Codec.Unescape(r[4]), ctx.Adapters);
                         string[] argIds = r[5].Length > 0 ? r[5].Split(',') : new string[0];
                         var args = new Type[argIds.Length];
                         for (int i = 0; i < argIds.Length; i++)
@@ -928,7 +1141,11 @@ namespace F5SnapshotSave
                 t = null;
             }
             if (t == null)
+            {
                 Errors.Add("type " + string.Join(" ", r) + " not found");
+                if (recorded != null)
+                    FailedAssemblies.Add(recorded);
+            }
             types[id] = t;
             return t;
         }
@@ -949,25 +1166,13 @@ namespace F5SnapshotSave
                 gs[i] = TypeOf(Codec.ParseInt(gIds[i]));
             try
             {
-                MethodInfo m = (MethodInfo)ModReflect.Target(t, name, gs.Length == 0 ? ps : null);
-                if (gs.Length > 0)
-                {
-                    if (!m.IsGenericMethodDefinition || m.GetGenericArguments().Length != gs.Length)
-                        throw new NotSupportedException("generic delegate signature changed");
-                    m = m.MakeGenericMethod(gs);
-                }
-                ParameterInfo[] actual = m.GetParameters();
-                bool same = actual.Length == ps.Length;
-                for (int i = 0; i < ps.Length && same; i++)
-                    same = actual[i].ParameterType == ps[i];
-                if (same)
-                {
-                    methods[id] = m;
-                    return;
-                }
+                methods[id] = SnapshotSchema.ResolveMethod(t, name, ps, gs, ctx.Adapters);
             }
-            catch (Exception e) { Errors.Add("method " + t.FullName + "." + name + ": " + e.Message); return; }
-            Errors.Add("method " + t.FullName + "." + name + " not found");
+            catch (Exception e)
+            {
+                Errors.Add("method " + t.FullName + "." + name + ": " + e.Message);
+                Blame(t);
+            }
         }
 
         private void CreateObjects()
@@ -989,9 +1194,12 @@ namespace F5SnapshotSave
                             // The game's readonly members are initialized by its own constructors.
                             // RichTextBuilder's arrays are then filled through normal array operations.
                             if (SnapshotTuples.IsTuple(t)) objs[id] = SnapshotTuples.Access(t).Create();
-                            else if (cat == "c" && CorpLink.ConstructorFields(t) != null) byConstructor.Add(id);
                             else if (t == typeof(RichTextBuilder)) objs[id] = new RichTextBuilder();
-                            else if (SnapshotSchema.DeclaredFields(t).Exists(f => !f.IsStatic && f.IsReadOnly)) objs[id] = ModReflect.New(t);
+                            // 0.8.0: a readonly instance field of the type or of any of its base types (the fields written,
+                            // SnapshotContext.CopyFields). Up to 0.7.1, and in the 0.8.0 code of the first review on
+                            // 2026-11-12, only the type's own fields counted, so that a base type's readonly collection
+                            // stayed null and the read-back failed (Codex code review, 2026-11-12).
+                            else if (ctx.CopyFields(t).Exists(f => f.IsReadOnly)) objs[id] = New(t);
                             else objs[id] = FormatterServices.GetUninitializedObject(t);
                             break;
                         case "a":
@@ -1016,18 +1224,16 @@ namespace F5SnapshotSave
                         case "I":
                             objs[id] = new StoreClientInstance();
                             break;
-                        case "K":
-                            object session = CorpLink.CaptureSession(t);
-                            if (session == null || !CorpLink.SessionIsCurrent(session))
-                                Errors.Add("object " + id + ": CorpPresence gave no current session");
-                            objs[id] = session;
-                            break;
                         case "x":
                         case "P":
-                            object existing = ResolvePath(p[4]);
+                            string pathProblem;
+                            object existing = ResolvePath(p[4], out pathProblem);
                             if (existing == null)
-                                Errors.Add("object " + id + " (" + t.FullName + "): path " + p[4] + " is empty");
+                                Errors.Add("object " + id + " (" + t.FullName + "): path " + p[4] + (pathProblem != null ? ": " + pathProblem : " is empty"));
                             objs[id] = existing;
+                            break;
+                        case "Y":
+                            objs[id] = FindByKey(id, t, Codec.Unescape(p.Length > 4 ? p[4] : ""));
                             break;
                         case "g":
                             GameItem item = ctx.FindItem(Codec.ParseInt(p[4]));
@@ -1056,12 +1262,106 @@ namespace F5SnapshotSave
                 catch (Exception e)
                 {
                     Errors.Add("creating object " + id + " (" + t.FullName + "): " + e.Message);
+                    Blame(t);
                 }
             }
         }
 
-        private object ResolvePath(string path)
+        // 0.8.0: a type of a mod that follows the spec with a readonly instance field is created through that mod's
+        // create function, which runs its constructor with that mod's ModReflect scope. The game's types as before.
+        private object New(Type t)
         {
+            Adapter adapter = ctx.Adapters.For(t.Assembly);
+            if (adapter == null)
+                return ModReflect.New(t);
+            object made = adapter.Create(t);
+            if (made == null || made.GetType() != t)
+                throw new NotSupportedException("the adapter of " + adapter.Mod + " created " + (made == null ? "nothing" : made.GetType().FullName));
+            return made;
+        }
+
+        // 0.8.0, spec 3.5: the live object for a key written by the writer ('Y'). The read-back check at save time finds
+        // the objects too; the catalogs and ledgers are live then. No object, an object of another type, or an exception
+        // is an error, so the whole snapshot falls back.
+        private object FindByKey(int id, Type t, string key)
+        {
+            Adapter adapter = ctx.Adapters.For(t.Assembly);
+            if (adapter == null || adapter.Find == null)
+            {
+                Errors.Add("object " + id + " (" + t.FullName + "): no adapter finds it by key");
+                Blame(t);
+                return null;
+            }
+            object found = adapter.Find(t, key);
+            if (found == null || found.GetType() != t)
+            {
+                Errors.Add("object " + id + " (" + t.FullName + "): key '" + key + "' found " + (found == null ? "nothing" : "a " + found.GetType().FullName));
+                Blame(t);
+                return null;
+            }
+            return found;
+        }
+
+        // 0.8.0, spec 3.6: E records. Each needs its provider assembly (checked with the other assemblies of the
+        // snapshot), spec version 1, an adapter of the provider with loadExtra in this operation, and an owner that the
+        // snapshot creates anew: a 'c' object of a game type, a StoreClientInstance ('I') or an item stored with the
+        // game's encoding ('G'). The value is rebuilt now; it is given back on the first shutter update.
+        private void ReadExtras()
+        {
+            Assembly game = typeof(StoreClient).Assembly;
+            foreach (string[] p in extraRecords)
+            {
+                if (p.Length < 5)
+                {
+                    Errors.Add("extra data record with " + p.Length + " fields");
+                    continue;
+                }
+                int owner = Codec.ParseInt(p[1]);
+                string[] rec;
+                Type ownerType = null;
+                if (objectRecords.TryGetValue(owner, out rec) && (rec[2] == "c" || rec[2] == "I" || rec[2] == "G"))
+                    types.TryGetValue(Codec.ParseInt(rec[3]), out ownerType);
+                if (ownerType == null || ownerType.Assembly != game)
+                {
+                    Errors.Add("extra data for object " + owner + ", which is not a game object the snapshot creates");
+                    continue;
+                }
+                Assembly provider;
+                if (!asms.TryGetValue(Codec.ParseInt(p[2]), out provider))
+                {
+                    Errors.Add("extra data of an unknown assembly " + p[2]);
+                    continue;
+                }
+                if (p[3] != SpecAdapters.Version)
+                {
+                    Errors.Add("extra data of " + provider.GetName().Name + " has spec version " + p[3]);
+                    FailedAssemblies.Add(provider);
+                    continue;
+                }
+                Adapter adapter = ctx.Adapters.For(provider);
+                if (adapter == null || adapter.LoadExtra == null)
+                {
+                    Errors.Add("extra data of " + provider.GetName().Name + ": no adapter of that mod takes it back");
+                    FailedAssemblies.Add(provider);
+                    continue;
+                }
+                object ownerObject;
+                objs.TryGetValue(owner, out ownerObject);
+                if (ownerObject == null && !dryRun)
+                {
+                    Errors.Add("extra data for object " + owner + ", which was not created");
+                    continue;
+                }
+                Extras.Add(new ExtraValue { Provider = provider, Owner = ownerObject, Value = Resolve(p[4]) });
+            }
+        }
+
+        // Every step after the static field is a field id. Up to 0.7.1 paths into the state of CorpPresence also had the
+        // steps .a<array index>, .i<list index> and .k<dictionary key>; 0.8.0 no longer supports CorpPresence (T-029) and
+        // does not read them.
+        private object ResolvePath(string path, out string problem)
+        {
+            problem = null;
             string[] steps = path.Split('.');
             if (steps.Length == 0 || steps[0].Length < 2 || steps[0][0] != 'S')
                 return null;
@@ -1069,37 +1369,19 @@ namespace F5SnapshotSave
             SnapshotField holder;
             if (head.Length != 2 || !fields.TryGetValue(Codec.ParseInt(head[1]), out holder))
                 return null;
-            object cur = holder.GetValue(null);
+            object cur = holder.GetValue(ctx, null);
             for (int i = 1; i < steps.Length && cur != null; i++)
             {
-                if (steps[i].StartsWith("a", StringComparison.Ordinal))
+                int fieldId;
+                if (!int.TryParse(steps[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out fieldId))
                 {
-                    var array = cur as Array;
-                    int index = Codec.ParseInt(steps[i].Substring(1));
-                    if (array == null || array.Rank != 1 || index < 0 || index >= array.Length) return null;
-                    cur = array.GetValue(index);
-                    continue;
-                }
-                if (steps[i].StartsWith("i", StringComparison.Ordinal))
-                {
-                    var list = cur as IList;
-                    int index = Codec.ParseInt(steps[i].Substring(1));
-                    if (list == null || index < 0 || index >= list.Count) return null;
-                    cur = list[index];
-                    continue;
-                }
-                if (steps[i].StartsWith("k", StringComparison.Ordinal))
-                {
-                    var dictionary = cur as IDictionary;
-                    string key = PathStep.UnescapeKey(steps[i].Substring(1));
-                    if (dictionary == null || !dictionary.Contains(key)) return null;
-                    cur = dictionary[key];
-                    continue;
+                    problem = "the step '" + steps[i] + "' is not a field id (array, list and dictionary steps were written up to 0.7.1 for CorpPresence, which is no longer supported)";
+                    return null;
                 }
                 SnapshotField f;
-                if (!fields.TryGetValue(Codec.ParseInt(steps[i]), out f))
+                if (!fields.TryGetValue(fieldId, out f))
                     return null;
-                cur = f.GetValue(cur);
+                cur = f.GetValue(ctx, cur);
             }
             return cur;
         }
@@ -1137,11 +1419,13 @@ namespace F5SnapshotSave
                 catch (Exception e)
                 {
                     Errors.Add("delegate " + id + " to " + m.DeclaringType.FullName + "." + m.Name + ": " + e.Message);
+                    Blame(m.DeclaringType);
                     continue;
                 }
                 if (d == null)
                 {
                     Errors.Add("delegate " + id + " to " + m.DeclaringType.FullName + "." + m.Name + " could not be bound");
+                    Blame(m.DeclaringType);
                     continue;
                 }
                 result = result == null ? d : Delegate.Combine(result, d);
@@ -1157,7 +1441,7 @@ namespace F5SnapshotSave
             foreach (KeyValuePair<int, string[]> record in objectRecords)
             {
                 string[] p = record.Value;
-                if (p[2] != "c" || byConstructor.Contains(record.Key)) continue;
+                if (p[2] != "c") continue;
                 object owner = objs[record.Key];
                 for (int i = 4; i < p.Length; i++)
                 {
@@ -1167,15 +1451,20 @@ namespace F5SnapshotSave
                     string value = p[i].Substring(eq + 1);
                     if (!value.StartsWith("r", StringComparison.Ordinal)) continue;
                     int id = Codec.ParseInt(value.Substring(1));
-                    object current = field.GetValue(owner), bound;
                     string[] target = objectRecords[id];
+                    // Only a collection the constructor made is bound here. Any other object in a readonly field (found by
+                    // key or by path, an item, a value, a delegate, a copied object) is compared after the constructor
+                    // like every other readonly field (FillFields, SnapshotField.SetValue: the same object or an equal
+                    // value, otherwise an error). Up to the third code review on 2026-11-12 such a field was refused
+                    // here even when the constructor had set exactly the stored object.
                     if (target[2] != "a" && target[2] != "l" && target[2] != "h" && target[2] != "q" && target[2] != "k" && target[2] != "d")
-                    { Errors.Add("readonly field needs an unsupported constructor: " + field.Name); continue; }
+                        continue;
+                    object current = field.GetValue(ctx, owner), bound;
                     if (current == null || current.GetType() != objs[id].GetType()
                         || (current is Array && ((Array)current).Length != Codec.ParseInt(target[4])))
-                    { Errors.Add("readonly collection shape changed: " + field.Name); continue; }
+                    { Errors.Add("readonly collection shape changed: " + field.Name); Blame(owner.GetType()); continue; }
                     if (bindings.TryGetValue(id, out bound) && !ReferenceEquals(bound, current))
-                    { Errors.Add("readonly collection sharing changed: " + field.Name); continue; }
+                    { Errors.Add("readonly collection sharing changed: " + field.Name); Blame(owner.GetType()); continue; }
                     if (!bindings.ContainsKey(id) && !(current is Array))
                     {
                         var list = current as IList;
@@ -1188,51 +1477,6 @@ namespace F5SnapshotSave
                     objs[id] = current;
                 }
             }
-        }
-
-        // Creates an object through its constructor, with the stored values of the fields the constructor takes.
-        // The fields are filled and compared afterwards like those of every other object (FillFields).
-        private object EnsureConstructed(int id)
-        {
-            object existing;
-            if (objs.TryGetValue(id, out existing))
-                return existing;
-            string[] p = objectRecords[id];
-            Type t = TypeOf(Codec.ParseInt(p[3]));
-            if (!inProgress.Add(id))
-            {
-                Errors.Add("object " + id + " (" + t.FullName + ") is needed by its own constructor");
-                return null;
-            }
-            object made = null;
-            try
-            {
-                var tokens = new Dictionary<string, string>();
-                for (int i = 4; i < p.Length; i++)
-                {
-                    int eq = p[i].IndexOf('=');
-                    SnapshotField f;
-                    if (eq > 0 && fields.TryGetValue(Codec.ParseInt(p[i].Substring(0, eq)), out f))
-                        tokens[f.Name] = p[i].Substring(eq + 1);
-                }
-                string[] names = CorpLink.ConstructorFields(t);
-                var args = new object[names.Length];
-                for (int i = 0; i < names.Length; i++)
-                {
-                    string token;
-                    if (!tokens.TryGetValue(names[i], out token))
-                        throw new NotSupportedException("field " + names[i] + " is not stored");
-                    args[i] = Resolve(token);
-                }
-                made = ModReflect.New(t, args);
-            }
-            catch (Exception e)
-            {
-                Errors.Add("creating object " + id + " (" + t.FullName + "): " + e.Message);
-            }
-            inProgress.Remove(id);
-            objs[id] = made;
-            return made;
         }
 
         private void FillFields(int id, string[] p, int start)
@@ -1249,17 +1493,171 @@ namespace F5SnapshotSave
                     Errors.Add("object " + id + ": bad field entry");
                     continue;
                 }
-                object v = Resolve(p[i].Substring(eq + 1));
+                string token = p[i].Substring(eq + 1);
+                // A readonly field is never set: the constructor's value must be exactly what was stored
+                // (ReadonlyMismatch). Up to the fifth code review round on 2026-11-12, part of these fields were compared
+                // in SnapshotField.SetValue with the Equals of the constructor's value.
+                if (f.IsReadOnly)
+                {
+                    string problem;
+                    try { problem = ReadonlyMismatch(f.GetValue(ctx, o), token); }
+                    catch (Exception e) { problem = e.GetType().Name + ": " + e.Message; }
+                    if (problem != null)
+                    {
+                        Errors.Add("object " + id + " field " + f.Name + ": constructor did not restore readonly field (" + problem + ")");
+                        Blame(o.GetType());
+                    }
+                    continue;
+                }
+                object v = Resolve(token);
                 try
                 {
-                    o = f.SetValue(o, v);
+                    o = f.SetValue(ctx, o, v);
                     objs[id] = o;
                 }
                 catch (Exception e)
                 {
                     Errors.Add("object " + id + " field " + f.Name + ": " + e.Message);
+                    Blame(o.GetType());
                 }
             }
+        }
+
+        private bool IsCollectionRecord(int id)
+        {
+            string[] rec;
+            if (!objectRecords.TryGetValue(id, out rec))
+                return false;
+            string cat = rec[2];
+            return cat == "a" || cat == "l" || cat == "h" || cat == "q" || cat == "k" || cat == "d";
+        }
+
+        // The constructor's value of a readonly field against its stored token; null when they agree. A collection was bound
+        // to the constructor's own collection (BindReadonlyFields), so it must be that very object; any other stored object
+        // is checked by StoredReadonlyMismatch; a stored scalar or null by ScalarMismatch.
+        private string ReadonlyMismatch(object current, string token)
+        {
+            if (token.Length > 1 && token[0] == 'r')
+            {
+                int target = Codec.ParseInt(token.Substring(1));
+                if (IsCollectionRecord(target))
+                {
+                    object bound;
+                    objs.TryGetValue(target, out bound);
+                    return bound != null && ReferenceEquals(current, bound) ? null : "not the collection the constructor made";
+                }
+                return StoredReadonlyMismatch(current, target, 0);
+            }
+            return ScalarMismatch(current, Resolve(token));
+        }
+
+        // 0.8.0 (code review 2026-11-12, fourth round): the constructor's value of a readonly field against the stored
+        // object 'id'; null when they agree. A reference found again (by key, by path, an item by its unique ID, an asset)
+        // must be the same object. A value must have the same type and agree field by field by these rules: the stored
+        // fields of a copied value ('s'), every field of a value found by key. Scalars agree by their value; the type's
+        // own Equals is never used, since a type may compare only part of its state. An object that reading always makes
+        // anew (a copied object, an item decoded from the game's encoding, which the read-back check at save time leaves
+        // null, a delegate, a StringBuilder, a client instance, an object made through a constructor) is never the
+        // constructor's object, so a readonly field holding one cannot be read back. Up to the fourth round, the field
+        // was compared with ReferenceEquals or Equals (SnapshotField.SetValue).
+        private string StoredReadonlyMismatch(object current, int id, int depth)
+        {
+            if (depth > 16)
+                return "values nested too deeply";
+            string[] rec;
+            if (!objectRecords.TryGetValue(id, out rec))
+                return "object " + id + " missing";
+            // The same object in any category.
+            object stored = rec[2] == "s" ? null : Resolve("r" + id);
+            if (stored != null && ReferenceEquals(current, stored))
+                return null;
+            switch (rec[2])
+            {
+                case "Y":
+                case "x":
+                case "P":
+                case "g":
+                case "u":
+                    // A value found by key agrees by its fields.
+                    if (stored != null && stored.GetType().IsValueType)
+                        return ValueMismatch(current, stored, depth);
+                    return "not the stored object " + id;
+                case "s":
+                {
+                    Type t = TypeOf(Codec.ParseInt(rec[3]));
+                    if (current == null || t == null || current.GetType() != t)
+                        return "not the stored " + (t != null ? t.FullName : "value");
+                    for (int i = 4; i < rec.Length; i++)
+                    {
+                        int eq = rec[i].IndexOf('=');
+                        SnapshotField f;
+                        if (eq < 0 || !fields.TryGetValue(Codec.ParseInt(rec[i].Substring(0, eq)), out f))
+                            return "bad field entry in value " + id;
+                        string token = rec[i].Substring(eq + 1);
+                        object part = f.GetValue(ctx, current);
+                        string problem = token.Length > 1 && token[0] == 'r'
+                            ? StoredReadonlyMismatch(part, Codec.ParseInt(token.Substring(1)), depth + 1)
+                            : ScalarMismatch(part, Resolve(token));
+                        if (problem != null)
+                            return f.Name + ": " + problem;
+                    }
+                    return null;
+                }
+                default:
+                    return "a stored object of category '" + rec[2] + "' is made anew when reading, never the constructor's object";
+            }
+        }
+
+        // A value found by key against the constructor's value: every instance field by the rules above.
+        private string ValueMismatch(object current, object stored, int depth)
+        {
+            if (depth > 16)
+                return "values nested too deeply";
+            Type t = stored.GetType();
+            if (current == null || current.GetType() != t)
+                return "not a " + t.FullName + " value";
+            if (IsScalar(t))
+                return ScalarMismatch(current, stored);
+            foreach (SnapshotField f in ctx.CopyFields(t))
+            {
+                object a = f.GetValue(ctx, current), b = f.GetValue(ctx, stored);
+                string problem;
+                if (a == null || b == null)
+                    problem = a == null && b == null ? null : "null on one side";
+                else if (IsScalar(b.GetType()))
+                    problem = ScalarMismatch(a, b);
+                else if (b.GetType().IsValueType)
+                    problem = ValueMismatch(a, b, depth + 1);
+                else
+                    problem = ReferenceEquals(a, b) ? null : "not the same object";
+                if (problem != null)
+                    return f.Name + ": " + problem;
+            }
+            return null;
+        }
+
+        private static readonly Type RuntimeTypeType = typeof(object).GetType();
+
+        // Primitives (pointers included), enums, strings, decimals and the runtime's own Type objects: values whose
+        // equality no mod's type can change. A Type object of another class (a TypeDelegator, for example) is not one.
+        private static bool IsScalar(Type t)
+        {
+            return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == RuntimeTypeType;
+        }
+
+        // 'current' is the constructor's value, 'stored' the value read from the snapshot (or the value found by key).
+        // Both must be null, or of exactly the same scalar type and equal by the stored value's own Equals, which belongs
+        // to the runtime for every scalar type; Type objects must be the same object.
+        private static string ScalarMismatch(object current, object stored)
+        {
+            if (current == null || stored == null)
+                return current == null && stored == null ? null : "null on one side";
+            Type t = stored.GetType();
+            if (current.GetType() != t || !IsScalar(t))
+                return "not the stored " + t.FullName + " value";
+            if (t == RuntimeTypeType)
+                return ReferenceEquals(current, stored) ? null : "a different type";
+            return stored.Equals(current) ? null : "a different value";
         }
 
         private void EnsureStruct(int id)
@@ -1280,11 +1678,11 @@ namespace F5SnapshotSave
         {
             var instance = (StoreClientInstance)objs[id];
             object client = Resolve(p[4]);
-            SnapshotField f = SnapshotSchema.Field(typeof(StoreClientInstance), "storeClient");
+            SnapshotField f = SnapshotSchema.Field(typeof(StoreClientInstance), "storeClient", ctx.Adapters);
             if (f == null)
                 Errors.Add("StoreClientInstance.storeClient not found");
             else
-                f.SetValue(instance, client);
+                f.SetValue(ctx, instance, client);
         }
 
         private void FillCollection(int id, string[] p)
@@ -1382,8 +1780,6 @@ namespace F5SnapshotSave
                         return GetDelegate(id);
                     if (rec[2] == "s")
                         EnsureStruct(id);
-                    if (byConstructor.Contains(id))
-                        return EnsureConstructed(id);
                     object o;
                     objs.TryGetValue(id, out o);
                     return o;

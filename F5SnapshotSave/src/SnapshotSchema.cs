@@ -5,7 +5,9 @@ using Newtonsoft.Json;
 
 namespace F5SnapshotSave
 {
-    // Only metadata names are generated offline. Every game/mod field access goes through the official broker.
+    // Only metadata names are generated offline. Every game/mod field access goes through the official broker: this mod's
+    // ModReflect, or, for an object of a mod that follows the compatibility spec, that mod's adapter (SnapshotContext).
+    // A SnapshotField holds names and flags only, never a function of an adapter, so the field lists can be cached.
     internal sealed class SnapshotField
     {
         internal readonly Type DeclaringType;
@@ -19,31 +21,83 @@ namespace F5SnapshotSave
         internal SnapshotField(Type owner, string name, bool isStatic, bool isReadOnly, bool isValueType, string fieldType)
         { DeclaringType = owner; Name = name; IsStatic = isStatic; IsReadOnly = isReadOnly; IsValueType = isValueType; FieldTypeName = fieldType; }
 
-        internal object GetValue(object target)
+        // 0.8.0: through the context of the operation, which knows the adapters collected for it.
+        internal object GetValue(SnapshotContext ctx, object target)
         {
             if (SnapshotTuples.IsTuple(DeclaringType)) return SnapshotTuples.Access(DeclaringType).Get(target, Name);
-            return IsStatic ? ModReflect.GetStatic(DeclaringType, Name) : ModReflect.Get(target, Name);
+            return IsStatic ? ctx.GetStatic(DeclaringType, Name) : ctx.GetInstance(target, Name);
         }
 
-        internal object SetValue(object target, object value)
+        internal object SetValue(SnapshotContext ctx, object target, object value)
         {
             if (SnapshotTuples.IsTuple(DeclaringType)) return SnapshotTuples.Access(DeclaringType).Set(target, Name, value);
             if (IsReadOnly)
             {
-                object current = GetValue(target);
+                object current = GetValue(ctx, target);
                 if (!ReferenceEquals(current, value) && (current == null || !current.Equals(value)))
                     throw new InvalidOperationException("constructor did not restore readonly field " + DeclaringType.FullName + "." + Name);
                 return target;
             }
-            if (IsStatic) ModReflect.SetStatic(DeclaringType, Name, value);
-            else ModReflect.Set(target, Name, value);
+            if (IsStatic) ctx.SetStatic(DeclaringType, Name, value);
+            else ctx.SetInstance(target, Name, value);
             return target;
+        }
+    }
+
+    // 0.8.0: a type that makes an object not storable: no field table for it or for one of its base types, a table that
+    // does not belong to the loaded module, or a type or method that would not be found again when the snapshot is read.
+    // Culprit is the type to blame; its mod is the one named to the player (IncompatibleNotice).
+    internal sealed class SnapshotTypeException : NotSupportedException
+    {
+        internal readonly Type Culprit;
+
+        internal SnapshotTypeException(Type culprit, string message) : base(message)
+        {
+            Culprit = culprit;
+        }
+    }
+
+    // A parsed field table (Format 2, see tools/generate_snapshot_schema.ps1): the table this mod ships
+    // (Data/snapshot-schema.json), or, since 0.8.0, the table of one assembly that a mod following the spec hands over
+    // (SpecAdapters). The SnapshotField lists made from it are cached per type; a table never changes once parsed.
+    internal sealed class FieldTable
+    {
+        internal readonly Dictionary<string, string> Modules;
+        private readonly Dictionary<string, SnapshotSchema.FieldRow[]> rows;
+        private readonly Dictionary<Type, List<SnapshotField>> declared = new Dictionary<Type, List<SnapshotField>>();
+
+        internal FieldTable(Dictionary<string, string> modules, Dictionary<string, SnapshotSchema.FieldRow[]> rows)
+        {
+            Modules = modules;
+            this.rows = rows;
+        }
+
+        internal bool Has(Type type)
+        {
+            return rows.ContainsKey(SnapshotSchema.Key(type));
+        }
+
+        internal List<SnapshotField> DeclaredFields(Type type)
+        {
+            List<SnapshotField> result;
+            if (declared.TryGetValue(type, out result)) return result;
+            SnapshotSchema.FieldRow[] list;
+            if (!rows.TryGetValue(SnapshotSchema.Key(type), out list) || list == null)
+                throw new SnapshotTypeException(type, "no snapshot schema for " + type.FullName);
+            result = new List<SnapshotField>();
+            foreach (SnapshotSchema.FieldRow row in list)
+            {
+                if (row != null && !string.IsNullOrEmpty(row.Name))
+                    result.Add(new SnapshotField(type, row.Name, row.Static, row.ReadOnly, row.ValueType, row.FieldType));
+            }
+            declared[type] = result;
+            return result;
         }
     }
 
     internal static class SnapshotSchema
     {
-        private sealed class FieldRow
+        internal sealed class FieldRow
         {
             public string Name { get; set; }
             public bool Static { get; set; }
@@ -51,124 +105,148 @@ namespace F5SnapshotSave
             public bool ValueType { get; set; }
             public string FieldType { get; set; }
         }
-        private sealed class Document
+        internal sealed class Document
         {
             public int Format { get; set; }
             public Dictionary<string, string> Modules { get; set; }
             public Dictionary<string, FieldRow[]> Fields { get; set; }
         }
-        private static Document document;
-        private static readonly Dictionary<Type, List<SnapshotField>> cache = new Dictionary<Type, List<SnapshotField>>();
+        private static FieldTable shipped;
+        private static readonly Dictionary<Type, List<SnapshotField>> tupleCache = new Dictionary<Type, List<SnapshotField>>();
 
-        private static Document Data
+        // The table this mod ships: the game, this mod and the kept integrations (Pen_mod_pipette, vanilla_gun_expansion)
+        // as installed when it was built. Since 0.8.0 the mods that follow the spec (GunsmithExpansion, Moneylending,
+        // KeptShotgun) are not in it; their adapters hand over their own tables. CorpPresence, an integration up to
+        // 0.7.1, is not in it either (T-029, yzz 2026-11-12).
+        private static FieldTable Shipped
         {
             get
             {
-                if (document != null) return document;
+                if (shipped != null) return shipped;
                 string json = ModHelper.ReadModFileText(F5SnapshotSaveMod.ModId, "Data/snapshot-schema.json");
                 if (string.IsNullOrEmpty(json)) throw new InvalidOperationException("snapshot field schema is missing; reinstall the complete mod");
-                Document parsed = JsonConvert.DeserializeObject<Document>(json, new JsonSerializerSettings {
-                    TypeNameHandling = TypeNameHandling.None, MetadataPropertyHandling = MetadataPropertyHandling.Ignore
-                });
+                Document parsed = Parse(json);
                 string expected;
                 if (parsed == null || parsed.Format != 2 || parsed.Modules == null || parsed.Fields == null
                     || !parsed.Modules.TryGetValue(typeof(StoreClient).Assembly.GetName().Name, out expected)
                     || expected != typeof(StoreClient).Module.ModuleVersionId.ToString("N"))
                     throw new InvalidOperationException("the game code differs from the snapshot schema; this mod needs an update");
-                document = parsed;
-                return parsed;
+                shipped = new FieldTable(parsed.Modules, parsed.Fields);
+                return shipped;
             }
         }
 
-        private static string Key(Type type)
+        // 0.8.0: called before a snapshot is written. When the game's code differs from the shipped table (after a game
+        // update and before this mod is built again, or on open_beta), the whole save fails as up to 0.7.1 (plan 3.14,
+        // yzz 2026-11-10); the exception is not caught by the checks that leave single customers out.
+        internal static void CheckGame()
+        {
+            if (Shipped == null) throw new InvalidOperationException("snapshot field schema is missing");
+        }
+
+        internal static Document Parse(string json)
+        {
+            return JsonConvert.DeserializeObject<Document>(json, new JsonSerializerSettings {
+                TypeNameHandling = TypeNameHandling.None, MetadataPropertyHandling = MetadataPropertyHandling.Ignore
+            });
+        }
+
+        internal static string Key(Type type)
         {
             Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
             return definition.Assembly.GetName().Name + ":" + definition.FullName;
         }
 
-        internal static bool CanDescribe(Type type) { return SnapshotTuples.IsTuple(type) || Data.Fields.ContainsKey(Key(type)); }
-
-        internal static List<SnapshotField> DeclaredFields(Type type)
+        // The table that describes the types of this assembly in the operation that holds these adapters: the adapter's
+        // table for a mod that follows the spec, otherwise the shipped one.
+        private static Adapter AdapterOf(Type type, AdapterSet adapters)
         {
-            List<SnapshotField> result;
-            if (cache.TryGetValue(type, out result)) return result;
-            if (SnapshotTuples.IsTuple(type)) { result = SnapshotTuples.Fields(type); cache[type] = result; return result; }
-            FieldRow[] rows;
-            if (!Data.Fields.TryGetValue(Key(type), out rows))
-                throw new NotSupportedException("no snapshot schema for " + type.FullName);
-            string assembly = type.Assembly.GetName().Name;
-            string expected;
-            if (type.Assembly != typeof(SnapshotSchema).Assembly && Data.Modules.TryGetValue(assembly, out expected)
-                && expected != type.Module.ModuleVersionId.ToString("N"))
-                throw new InvalidOperationException("snapshot schema is out of date for " + assembly);
-            result = new List<SnapshotField>();
-            foreach (FieldRow row in rows)
-                result.Add(new SnapshotField(type, row.Name, row.Static, row.ReadOnly, row.ValueType, row.FieldType));
-            cache[type] = result;
-            return result;
+            return adapters != null ? adapters.For(type.Assembly) : null;
         }
 
-        internal static SnapshotField Field(Type type, string name)
+        internal static bool CanDescribe(Type type, AdapterSet adapters)
         {
-            foreach (SnapshotField field in DeclaredFields(type)) if (field.Name == name) return field;
+            if (SnapshotTuples.IsTuple(type)) return true;
+            Adapter adapter = AdapterOf(type, adapters);
+            return adapter != null ? adapter.Table.Has(type) : Shipped.Has(type);
+        }
+
+        internal static List<SnapshotField> DeclaredFields(Type type, AdapterSet adapters)
+        {
+            if (SnapshotTuples.IsTuple(type))
+            {
+                List<SnapshotField> tuple;
+                if (!tupleCache.TryGetValue(type, out tuple)) { tuple = SnapshotTuples.Fields(type); tupleCache[type] = tuple; }
+                return tuple;
+            }
+            Adapter adapter = AdapterOf(type, adapters);
+            if (adapter != null) return adapter.Table.DeclaredFields(type);
+            FieldTable table = Shipped;
+            if (!table.Has(type))
+                throw new SnapshotTypeException(type, "no snapshot schema for " + type.FullName);
+            string assembly = type.Assembly.GetName().Name;
+            string expected;
+            if (type.Assembly != typeof(SnapshotSchema).Assembly && table.Modules.TryGetValue(assembly, out expected)
+                && expected != type.Module.ModuleVersionId.ToString("N"))
+                throw new SnapshotTypeException(type, "snapshot schema is out of date for " + assembly);
+            return table.DeclaredFields(type);
+        }
+
+        internal static SnapshotField Field(Type type, string name, AdapterSet adapters)
+        {
+            foreach (SnapshotField field in DeclaredFields(type, adapters)) if (field.Name == name) return field;
             return null;
         }
 
-        // Immutable catalog definitions remain the existing objects in their declared mod's static arrays.
-        private static readonly Dictionary<Type, List<SnapshotField>> arrayFields = new Dictionary<Type, List<SnapshotField>>();
-        internal static bool FindArrayReference(object value, out SnapshotField holder, out int index)
-        {
-            holder = null; index = -1;
-            Type type = value.GetType();
-            string assembly = type.Assembly.GetName().Name;
-            // GunDef is immutable configuration owned by the catalog. Do not generalize this to mutable static arrays.
-            if ((assembly != "GunsmithExpansion" && assembly != "VVittgenstein.GunsmithExpansion")
-                || type.FullName != "GunsmithExpansion.GunDef") return false;
-            if (!Data.Modules.ContainsKey(assembly)) return false;
-            List<SnapshotField> candidates;
-            if (!arrayFields.TryGetValue(type, out candidates))
-            {
-                candidates = new List<SnapshotField>();
-                string prefix = assembly + ":", wanted = type.FullName + "[]";
-                foreach (var row in Data.Fields)
-                {
-                    if (!row.Key.StartsWith(prefix, StringComparison.Ordinal)) continue;
-                    foreach (FieldRow field in row.Value)
-                    {
-                        if (!field.Static || field.FieldType != wanted) continue;
-                        Type owner = ResolveType(type.Assembly, row.Key.Substring(prefix.Length));
-                        if (owner != null) candidates.Add(Field(owner, field.Name));
-                    }
-                }
-                arrayFields[type] = candidates;
-            }
-            foreach (SnapshotField candidate in candidates)
-            {
-                var array = candidate.GetValue(null) as Array;
-                if (array == null || array.Rank != 1) continue;
-                for (int i = 0; i < array.Length; i++)
-                    if (ReferenceEquals(array.GetValue(i), value)) { holder = candidate; index = i; return true; }
-            }
-            return false;
-        }
+        // The shipped table only (the game, this mod and the kept integrations), for test code that checks it.
+        internal static bool CanDescribe(Type type) { return CanDescribe(type, null); }
+        internal static List<SnapshotField> DeclaredFields(Type type) { return DeclaredFields(type, null); }
+        internal static SnapshotField Field(Type type, string name) { return Field(type, name, null); }
 
-        internal static Type ResolveType(Assembly expectedAssembly, string name)
+        // The type of a 'T' record when a snapshot is read, and since 0.8.0 the same lookup for every type the writer is
+        // about to record (GraphWriter.TypeId): the framework types this mod knows, the type of a mod that follows the
+        // spec through its adapter's findType, any other through ModReflect.FindType (the game, this mod and its running
+        // prerequisites). A different Workshop mod may use the same namespace and type name, so the result must be in the
+        // recorded assembly. Up to 0.7.1 GunsmithExpansion's types had a second lookup by its manifest ID here, and its
+        // GunDef objects were written as paths into its static arrays (FindArrayReference); GunsmithExpansion now finds
+        // them again by key (spec 3.5).
+        internal static Type ResolveType(Assembly expectedAssembly, string name, AdapterSet adapters)
         {
             Type result;
-            if (!KnownTypes.TryGetValue(name, out result)) result = ModReflect.FindType(name);
-            // A different Workshop mod may use the same namespace and type name.
-            // Resolve this integration through its manifest ID and verify the
-            // recorded assembly, while keeping the game's scoped API.
-            if ((result == null || result.Assembly != expectedAssembly)
-                && expectedAssembly.GetName().Name == "VVittgenstein.GunsmithExpansion")
-            {
-                foreach (Type candidate in ModReflect.Types("GunsmithExpansion"))
-                    if (candidate.Assembly == expectedAssembly && candidate.FullName == name)
-                    { result = candidate; break; }
-            }
+            Adapter adapter = adapters != null ? adapters.For(expectedAssembly) : null;
+            if (adapter != null) result = adapter.FindType(name);
+            else if (!KnownTypes.TryGetValue(name, out result)) result = ModReflect.FindType(name);
             if (result == null || result.Assembly != expectedAssembly)
                 throw new NotSupportedException("snapshot type is not in its recorded assembly: " + name);
             return result;
+        }
+
+        // The method of a delegate in a snapshot ('M' record), and since 0.8.0 the same lookup when the writer records it
+        // (GraphWriter.MethodId): a method of a mod that follows the spec through its adapter's method function, any other
+        // through ModReflect.Target. The parameter types must be the recorded ones.
+        internal static MethodInfo ResolveMethod(Type type, string name, Type[] parameters, Type[] genericArguments, AdapterSet adapters)
+        {
+            Adapter adapter = adapters != null ? adapters.For(type.Assembly) : null;
+            Type[] signature = genericArguments.Length == 0 ? parameters : null;
+            MethodBase found = adapter != null ? adapter.Method(type, name, signature) : ModReflect.Target(type, name, signature);
+            var method = found as MethodInfo;
+            if (method == null)
+                throw new NotSupportedException("method " + type.FullName + "." + name + " not found");
+            if (adapter != null && method.DeclaringType != type)
+                throw new NotSupportedException("the adapter of " + adapter.Mod + " gave a method of " + (method.DeclaringType == null ? "no type" : method.DeclaringType.FullName));
+            if (genericArguments.Length > 0)
+            {
+                if (!method.IsGenericMethodDefinition || method.GetGenericArguments().Length != genericArguments.Length)
+                    throw new NotSupportedException("generic delegate signature changed");
+                method = method.MakeGenericMethod(genericArguments);
+            }
+            ParameterInfo[] actual = method.GetParameters();
+            bool same = actual.Length == parameters.Length;
+            for (int i = 0; i < parameters.Length && same; i++)
+                same = actual[i].ParameterType == parameters[i];
+            if (!same)
+                throw new NotSupportedException("method " + type.FullName + "." + name + " not found");
+            return method;
         }
 
         private static readonly Dictionary<string, Type> KnownTypes = MakeKnownTypes();

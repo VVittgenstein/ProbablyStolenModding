@@ -1,5 +1,5 @@
 [assembly: System.Reflection.AssemblyTitle("GunsmithExpansion")]
-[assembly: System.Reflection.AssemblyVersion("0.7.5.0")]
+[assembly: System.Reflection.AssemblyVersion("0.7.6.0")]
 
 namespace GunsmithExpansion
 {
@@ -9,7 +9,7 @@ namespace GunsmithExpansion
     {
         internal const string ModId = "GunsmithExpansion";
         internal const string LogPrefix = "[GunsmithExpansion] ";
-        internal static string Version = "0.7.5";
+        internal static string Version = "0.7.6";
 
         public void Init(ModManifest manifest)
         {
@@ -45,6 +45,7 @@ namespace GunsmithExpansion
             Reservations.Register();
             Contracts.Register();
             NewCustomers.Register();
+            F5SnapshotSpec.Register();
         }
 
         // Called when the game quits (ModLoader.OnApplicationQuit) and when it stops the mod while it runs because of the trust list

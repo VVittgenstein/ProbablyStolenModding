@@ -94,6 +94,19 @@ namespace GunsmithExpansion
             return order != null && orders.TryGetValue(order, out t);
         }
 
+        internal static Theme ThemeOf(GunOrderData order)
+        {
+            Theme t;
+            return order != null && orders.TryGetValue(order, out t) ? t : null;
+        }
+
+        // The theme of an order that F5 Quick Save Plus made anew from its snapshot on load (F5SnapshotSpec.LoadExtra).
+        internal static void PutTheme(GunOrderData order, Theme theme)
+        {
+            orders.Remove(order);
+            orders.Add(order, theme);
+        }
+
         // A task of the gunsmith sign's customers (GunsmithSign.CreateCustomer), from the second firearm permit on.
         internal static bool CanOrder()
         {

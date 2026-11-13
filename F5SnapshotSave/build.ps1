@@ -18,6 +18,9 @@
 .PARAMETER IntegrationAssemblies
     Explicit paths to integration DLLs for the snapshot schema. When supplied, installed integrations
     are not discovered automatically. This lets a complete source build use its freshly built DLLs.
+    Since 0.8.0 the mods that follow the compatibility spec (GunsmithExpansion, Moneylending, KeptShotgun)
+    hand over their own field tables at run time; tools\generate_snapshot_schema.ps1 leaves them out of the
+    shipped table also when they are passed here.
 #>
 param(
     [string]$GameDir = 'E:\SteamLibrary\steamapps\common\Probably Stolen',
@@ -67,12 +70,13 @@ try {
         }
     }
     else {
-        foreach ($id in 'GunsmithExpansion','Moneylending','KeptShotgun','CorpPresence','Pen_mod_pipette') {
+        # The kept integrations as installed (T-029 plan 3.2). GunsmithExpansion, Moneylending and KeptShotgun follow the
+        # compatibility spec since 0.8.0, and CorpPresence is no longer supported (plan section 14); none of them is put
+        # into this mod's table.
+        foreach ($id in @('Pen_mod_pipette')) {
             $path = Join-Path $GameDir "Mods\$id\$id.dll"
             if (Test-Path -LiteralPath $path) { $schemaAssemblies += $path }
         }
-        $corp = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3828913695\CorpPresence.dll'
-        if (Test-Path -LiteralPath $corp) { $schemaAssemblies += $corp }
         $pipette = Join-Path (Split-Path -Parent (Split-Path -Parent $GameDir)) 'workshop\content\4348910\3829409725\Pen_mod_pipette.dll'
         if (Test-Path -LiteralPath $pipette) { $schemaAssemblies += $pipette }
         # This integration's manifest ID and DLL basename differ.

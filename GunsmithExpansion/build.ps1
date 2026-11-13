@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Compiles GunsmithExpansion.dll against the installed game's assemblies and installs the mod
-    (manifest.xml, DLL, Textures\ and Books\) into <GameDir>\Mods\GunsmithExpansion.
+    (manifest.xml, DLL, Textures\, Books\ and Data\f5-snapshot-fields.json) into <GameDir>\Mods\GunsmithExpansion.
 
 .DESCRIPTION
     Uses the C# compiler (csc.dll) of the newest .NET SDK found through `dotnet --list-sdks`.
@@ -9,11 +9,14 @@
     from <GameDir>\Probably Stolen_Data\Managed. Close the game before installing over a copy
     the game has loaded.
 
+    Data\f5-snapshot-fields.json is the field table of the installed DLL for F5 Quick Save Plus
+    (src\F5SnapshotSpec.cs), written by ..\F5SnapshotSave\tools\generate_spec_fields.ps1.
+
 .PARAMETER GameDir
     Game installation directory.
 
 .PARAMETER OutDir
-    Folder that receives manifest.xml, the DLL, Textures\ and Books\. Defaults to <GameDir>\Mods\GunsmithExpansion.
+    Folder that receives manifest.xml, the DLL, Textures\, Books\ and the field table. Defaults to <GameDir>\Mods\GunsmithExpansion.
 #>
 param(
     [string]$GameDir = 'E:\SteamLibrary\steamapps\common\Probably Stolen',
@@ -35,6 +38,10 @@ $sdkLine = & $dotnet --list-sdks | Select-Object -Last 1
 if ($sdkLine -notmatch '^(\S+) \[(.+)\]$') { throw "Unexpected 'dotnet --list-sdks' output: $sdkLine" }
 $csc = Join-Path (Join-Path $Matches[2] $Matches[1]) 'Roslyn\bincore\csc.dll'
 if (-not (Test-Path -LiteralPath $csc)) { throw "csc.dll not found at '$csc'." }
+# Field table for F5 Quick Save Plus (src\F5SnapshotSpec.cs), written from the built DLL. Checked before anything is
+# built, so that a checkout without the tool fails before it writes to -OutDir.
+$specTool = Join-Path $PSScriptRoot '..\F5SnapshotSave\tools\generate_spec_fields.ps1'
+if (-not (Test-Path -LiteralPath $specTool)) { throw "generate_spec_fields.ps1 not found at '$specTool'." }
 
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("$modName-build-" + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
@@ -55,8 +62,18 @@ try {
     & $dotnet $csc -noconfig "@$rsp"
     if ($LASTEXITCODE -ne 0) { throw "csc exited with code $LASTEXITCODE." }
 
+    # The field table is made from the DLL just built, in the staging folder, before anything is copied: F5 Quick Save
+    # Plus uses it only when the module version id recorded in it equals the one of the DLL the game loads. When
+    # compiling or making the table fails, nothing is copied to -OutDir. The tool takes the assembly name from the DLL,
+    # so the table is keyed by $assemblyName, the name the game loads it under.
+    $stagedTable = Join-Path $staging 'Data\f5-snapshot-fields.json'
+    & $specTool -Dll $dll -Out $stagedTable -GameDir $GameDir
+    if (-not (Test-Path -LiteralPath $stagedTable)) { throw "The field table was not written: $stagedTable" }
+
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     Copy-Item -LiteralPath $dll -Destination (Join-Path $OutDir "$modName.dll") -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'Data') | Out-Null
+    Copy-Item -LiteralPath $stagedTable -Destination (Join-Path $OutDir 'Data\f5-snapshot-fields.json') -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'manifest.xml') -Destination (Join-Path $OutDir 'manifest.xml') -Force
     # Textures\Items\*.png: item pictures the game's ModLoader loads into this mod's sprites (the guns and gun mods).
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Textures') -Destination $OutDir -Recurse -Force

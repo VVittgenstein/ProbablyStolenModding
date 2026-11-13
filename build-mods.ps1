@@ -5,9 +5,6 @@
     Probably Stolen installation containing Probably Stolen_Data\Managed.
 .PARAMETER OutDir
     Empty output directory. Defaults to a new directory under the system temporary directory.
-.PARAMETER CorpPresenceDll
-    Optional CorpPresence.dll to include in the F5 Quick Save Plus snapshot schema.
-    Use the exact version you intend to run with the generated mods.
 .PARAMETER PenPipetteDll
     Optional Pen_mod_pipette.dll to include in the F5 Quick Save Plus snapshot schema.
     Use the exact version you intend to run with the generated mods.
@@ -19,7 +16,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$GameDir,
     [string]$OutDir = (Join-Path ([IO.Path]::GetTempPath()) ('ProbablyStolenMods-' + [Guid]::NewGuid().ToString('N'))),
-    [string]$CorpPresenceDll,
     [string]$PenPipetteDll,
     [string]$VanillaGunExpansionDll
 )
@@ -40,9 +36,6 @@ if (Test-Path -LiteralPath $OutDir) {
     }
 }
 $integrations = @()
-if ($CorpPresenceDll) {
-    $CorpPresenceDll = (Resolve-Path -LiteralPath $CorpPresenceDll -ErrorAction Stop).Path
-}
 if ($PenPipetteDll) {
     $PenPipetteDll = (Resolve-Path -LiteralPath $PenPipetteDll -ErrorAction Stop).Path
 }
@@ -51,16 +44,14 @@ if ($VanillaGunExpansionDll) {
 }
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
-# Build integration DLLs before generating the Plus schema. No installed copy of these mods is required.
+# Gunsmith Expansion, Moneylending and KeptShotgun follow the F5 Quick Save Plus spec: each build writes the field
+# table of its own DLL (Data\f5-snapshot-fields.json), so the Plus schema holds only the other integrations below.
+# CorpPresence is no longer an integration of F5 Quick Save Plus (0.8.0); its generator leaves it out.
 $mods = @('F5ForceSave', 'MentorNoteAutoFile', 'KeptShotgun', 'Moneylending',
           'GunsmithExpansion', 'GunsmithExpansion2077')
 foreach ($mod in $mods) {
     & (Join-Path $PSScriptRoot "$mod\build.ps1") -GameDir $GameDir -OutDir (Join-Path $OutDir $mod)
 }
-foreach ($mod in 'GunsmithExpansion', 'Moneylending', 'KeptShotgun') {
-    $integrations += Join-Path $OutDir "$mod\$mod.dll"
-}
-if ($CorpPresenceDll) { $integrations += $CorpPresenceDll }
 if ($PenPipetteDll) { $integrations += $PenPipetteDll }
 if ($VanillaGunExpansionDll) { $integrations += $VanillaGunExpansionDll }
 & (Join-Path $PSScriptRoot 'F5SnapshotSave\build.ps1') -GameDir $GameDir `

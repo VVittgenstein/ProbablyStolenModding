@@ -270,6 +270,51 @@ namespace F5SnapshotSave
                 "Клиентов в очереди сейчас нельзя сохранить (подробности в Player.log).") + ReturnPoint(last);
         }
 
+        // 0.8.0 (T-029, plan section 10, text 1): added after Saved when waiting customers were left out of the snapshot;
+        // they are created again by identifier after loading, and one that cannot be created does not come back.
+        internal static string SavedRegenerated(int count)
+        {
+            return T("；排队中 " + count + " 位顾客带着 F5 存档存不下的东西，读档后会重新生成，无法生成的不再出现",
+                "; " + count + " waiting customer(s) carry things an F5 save can't store and will be created anew after loading (those that can't be created won't come back)",
+                "; клиентов в очереди, которые после загрузки будут созданы заново (у них есть то, что сохранение F5 сохранить не может; клиенты, которых нельзя создать, не вернутся): " + count);
+        }
+
+        // 0.8.0 (plan section 10, text 2): a customer on the chemical feedback list (they come back after a chemical was
+        // sold and join the line when the shop next opens) carries something an F5 save can't store.
+        internal static string FeedbackNotStorable(SavePreviewData last)
+        {
+            string key = SaveKey.Name();
+            return T("今天卖出化学品后要回来的一位顾客现在存不进存档（详见 Player.log），明天开门后再按 " + key + "。",
+                "A customer who will come back after today's chemical sales can't be stored right now (see Player.log). Press " + key + " after the shop opens tomorrow.",
+                "Клиента, который вернётся после сегодняшней продажи химикатов, сейчас нельзя сохранить (подробности в Player.log). Нажмите " + key + " завтра после открытия магазина.") + ReturnPoint(last);
+        }
+
+        // 0.8.0 (plan section 10, text 3): the window that names mods whose objects on customers an F5 save can't store
+        // (IncompatibleNotice). names: the mods' names from their manifests; url: this mod's Workshop page.
+        internal static string IncompatibleTitle()
+        {
+            return T("有 Mod 与 F5 存档加强版不兼容", "Some mods are not compatible with F5 Quick Save Plus", "Некоторые моды несовместимы с F5 Quick Save Plus");
+        }
+
+        internal static string IncompatibleBody(System.Collections.Generic.List<string> names, string url)
+        {
+            string zh = string.Join("、", names.ToArray());
+            string other = string.Join(", ", names.ToArray());
+            return T("以下 Mod 加在顾客身上的东西存不进 F5 存档：" + zh + "。这样的顾客排队时，读档后会重新生成，无法生成的不再出现；在柜台时不能存档。\n\n兼容说明见 F5 存档加强版的创意工坊页面：" + url + "。",
+                "What these mods add to customers can't be stored in an F5 save: " + other + ". Such customers are created anew after loading when they were waiting in line (those that can't be created don't come back); while one of them is at the counter, saving is not possible.\n\nThe compatibility notes are on the Workshop page of F5 Quick Save Plus: " + url + ".",
+                "То, что эти моды добавляют клиентам, не записывается в сохранение F5: " + other + ". Такие клиенты, если они стояли в очереди, после загрузки создаются заново (клиенты, которых нельзя создать, не возвращаются); пока такой клиент у прилавка, сохраниться нельзя.\n\nОписание совместимости находится на странице F5 Quick Save Plus в Мастерской Steam: " + url + ".");
+        }
+
+        internal static string CopyLinkButton()
+        {
+            return T("复制链接", "Copy link", "Скопировать ссылку");
+        }
+
+        internal static string GotItButton()
+        {
+            return T("知道了", "OK", "Понятно");
+        }
+
         internal static string TemporaryNotEmpty()
         {
             string key = SaveKey.Name();

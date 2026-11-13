@@ -112,6 +112,13 @@ namespace GunsmithExpansion
             return order != null && plans.TryGetValue(order, out p) ? p : null;
         }
 
+        // The plan of an order that F5 Quick Save Plus made anew from its snapshot on load (F5SnapshotSpec.LoadExtra).
+        internal static void PutPlan(GunOrderData order, Plan plan)
+        {
+            plans.Remove(order);
+            plans.Add(order, plan);
+        }
+
         internal static void TryConvert(GunOrderData order)
         {
             if (order == null || !order.isServiceOrder || order.baseReward <= 0 || RepairOrders.IsRepairOrder(order) || IsModOrder(order)

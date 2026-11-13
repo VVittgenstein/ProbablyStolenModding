@@ -255,8 +255,9 @@ namespace F5SnapshotSave
                 return;
             // 0.5.1: Restore.OnGameLoaded runs first. When this load has a notice of its own (the snapshot could not be
             // rebuilt), the sentence is shown with that notice on the first shutter update (ShutterUpdatePatch); shown
-            // here, the later notice would replace it.
-            if (Restore.PendingNotice != null)
+            // here, the later notice would replace it. 0.8.0: the same when the snapshot can still be dropped on the first
+            // shutter update (extra data to give back), which brings a notice of its own.
+            if (Restore.PendingNotice != null || (Restore.PendingSnapshot != null && Restore.PendingSnapshot.Extras.Count > 0))
             {
                 Restore.PendingConflict = note;
                 return;

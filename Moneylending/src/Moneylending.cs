@@ -1,7 +1,7 @@
 using System;
 
 [assembly: System.Reflection.AssemblyTitle("Moneylending")]
-[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.1.0")]
 
 namespace Moneylending
 {
@@ -30,9 +30,21 @@ namespace Moneylending
                 Warn("setting up the settings failed: " + e);
             }
             Clients.RegisterStatic();
+            // F5 Quick Save Plus stores this mod's visitors exactly only with the adapter (F5SnapshotSpec); without it
+            // they are handled as objects it does not know.
+            try
+            {
+                F5SnapshotSpec.Register();
+            }
+            catch (Exception e)
+            {
+                Warn("registering the adapter for F5 Quick Save Plus failed: " + e);
+            }
 
             ModHook.OnGameLoadedInit -= OnGameLoading;
             ModHook.OnGameLoadedInit += OnGameLoading;
+            ModHook.OnGameLoadedEarly -= OnGameRead;
+            ModHook.OnGameLoadedEarly += OnGameRead;
             ModHook.OnNewGameStarted -= OnNewGame;
             ModHook.OnNewGameStarted += OnNewGame;
             ModHook.OnGameLoadedLate -= OnGameLoaded;
@@ -54,16 +66,26 @@ namespace Moneylending
             }
         }
 
-        // Called only when the game quits.
+        // Called when the game quits (ModLoader.OnApplicationQuit) and when it stops the running mod
+        // (ModLoader.StopRunningMod: a changed trust verdict or the Steam guard).
         public void OnDisable()
         {
             ModHook.OnGameLoadedInit -= OnGameLoading;
+            ModHook.OnGameLoadedEarly -= OnGameRead;
             ModHook.OnNewGameStarted -= OnNewGame;
             ModHook.OnGameLoadedLate -= OnGameLoaded;
             ModHook.OnGenerateCustomerVeryLate -= Daily.OnGenerateCustomers;
             ModHook.OnGoingSleepLate -= Daily.OnNight;
             ModHook.OnCreateTooltipLate -= Pledges.OnTooltip;
             ModHook.OnModItemDirectoryInit -= Sign.OnItemDirectoryInit;
+            try
+            {
+                F5SnapshotSpec.Unregister();
+            }
+            catch (Exception e)
+            {
+                Warn("removing the adapter for F5 Quick Save Plus failed: " + e);
+            }
             if (host != null)
             {
                 UnityEngine.Object.Destroy(host);
@@ -98,21 +120,43 @@ namespace Moneylending
             }
         }
 
-        // PlayerStore and the inventories have just been read from the slot file. Visitors queued for a later
-        // day are stored by identifier, so the per-loan identifiers have to exist before the queue is rebuilt.
+        // PlayerStore.LoadGame has read the slot file into the store (ES3.LoadInto, PlayerStore.modData with the ledger
+        // included) and fires OnGameLoadedEarly before it reads the inventories and fires OnGameLoadedLate. The ledger is
+        // read here, before any mod's OnGameLoadedLate handler, whatever the order in which the mods were loaded:
+        // F5 Quick Save Plus reads its snapshot in its OnGameLoadedLate handler,
+        // finds the loans, debts and today's request of the restored visitors in the ledger by key (F5SnapshotSpec.Find),
+        // and later recreates customers by identifier. Visitors queued for a later day are also stored by identifier, so the
+        // per-loan identifiers have to exist before any queue is rebuilt. A load from inside a run can keep the same
+        // PlayerStore object (PlayerStore.ResetData clears it only on the way to the main menu), so Book.S would not notice
+        // the new save on its own; the ledger is read explicitly on every load.
+        private static void OnGameRead()
+        {
+            try
+            {
+                Book.Load();
+                Clients.RegisterRecords();
+            }
+            catch (Exception e)
+            {
+                Warn("reading the ledger failed: " + e);
+            }
+        }
+
+        // PlayerStore and the inventories have been read from the slot file. The ledger is not read again here: that
+        // would replace Book.S, and the loans, debts and request that F5 Quick Save Plus may already have found for its
+        // restored visitors (if its handler ran first) would no longer be the ledger's, so their repayments would not be
+        // recorded.
         private static void OnGameLoaded()
         {
             try
             {
                 Unlock.Register();
-                Book.Load();
-                Clients.RegisterRecords();
                 Log("ledger loaded: " + Book.S.loans.Count + " loan(s), " + Book.S.debts.Count + " debt(s)");
                 Sign.GiveIfMissing();
             }
             catch (Exception e)
             {
-                Warn("loading the ledger failed: " + e);
+                Warn("setting up the loaded run failed: " + e);
             }
         }
 

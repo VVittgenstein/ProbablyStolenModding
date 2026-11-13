@@ -7,12 +7,12 @@ Seven complete mod build projects for [Probably Stolen](https://store.steampower
 | Project | Version | Function | Steam Workshop |
 |---|---|---|---|
 | [F5ForceSave](F5ForceSave/) | 1.8.0 | F5 quick save / F5 存档 | [3828962908](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962908) |
-| [F5SnapshotSave](F5SnapshotSave/) | 0.7.1 | F5 quick save with more runtime state / F5 存档加强版 | [3831061477](https://steamcommunity.com/sharedfiles/filedetails/?id=3831061477) |
-| [GunsmithExpansion](GunsmithExpansion/) | 0.7.5 | Gunsmith expansion / 枪匠拓展 | [3833272785](https://steamcommunity.com/sharedfiles/filedetails/?id=3833272785) |
+| [F5SnapshotSave](F5SnapshotSave/) | 0.8.0 | F5 quick save with more runtime state / F5 存档加强版 | [3831061477](https://steamcommunity.com/sharedfiles/filedetails/?id=3831061477) |
+| [GunsmithExpansion](GunsmithExpansion/) | 0.7.6 | Gunsmith expansion / 枪匠拓展 | [3833272785](https://steamcommunity.com/sharedfiles/filedetails/?id=3833272785) |
 | [GunsmithExpansion2077](GunsmithExpansion2077/) | 0.7.1 | Four additional guns for Gunsmith Expansion / 枪匠拓展 2077 附加包 | [3836151420](https://steamcommunity.com/sharedfiles/filedetails/?id=3836151420) |
-| [KeptShotgun](KeptShotgun/) | 1.1.2 | Armed robbery and intimidation / 持枪抢劫与威胁议价 | [3830273949](https://steamcommunity.com/sharedfiles/filedetails/?id=3830273949) |
+| [KeptShotgun](KeptShotgun/) | 1.1.3 | Armed robbery and intimidation / 持枪抢劫与威胁议价 | [3830273949](https://steamcommunity.com/sharedfiles/filedetails/?id=3830273949) |
 | [MentorNoteAutoFile](MentorNoteAutoFile/) | 1.1.1 | Automatically file mentor notes / 导师笔记自动收进手册 | [3828962954](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962954) |
-| [Moneylending](Moneylending/) | 1.5.0 | Moneylending / 放贷 | [3830603988](https://steamcommunity.com/sharedfiles/filedetails/?id=3830603988) |
+| [Moneylending](Moneylending/) | 1.5.1 | Moneylending / 放贷 | [3830603988](https://steamcommunity.com/sharedfiles/filedetails/?id=3830603988) |
 
 The [open_beta](open_beta/) folder holds a variant of F5SnapshotSave for the game's open_beta branch. It is not published on the Workshop, has not been tested on open_beta and gets no timely support; see its README.
 
@@ -60,6 +60,7 @@ The individual scripts default to installing into `<GameDir>/Mods/<ModID>` if `O
 | `GunsmithExpansion2077/guns.tsv`, `Textures/` | Add-on gun data and textures / 附加包枪械数据与贴图 |
 | `Moneylending/Textures/` | Runtime textures / 运行时贴图 |
 | `F5SnapshotSave/tools/generate_snapshot_schema.ps1` | Snapshot field-schema generator / 快照字段表生成器 |
+| `F5SnapshotSave/tools/generate_spec_fields.ps1` | Spec field-table generator, used by the GunsmithExpansion, Moneylending and KeptShotgun builds / 规范字段表生成器，枪匠拓展、放贷、持枪抢劫的构建使用 |
 
 The checked-in C#, PNG, JSON and TSV files are sufficient to compile and package these versions. They can be edited directly. Game DLLs are read from the local game installation.
 
@@ -71,17 +72,17 @@ F5SnapshotSave generates `Data/snapshot-schema.json` at build time with Mono.Cec
 
 F5SnapshotSave 在构建时使用游戏提供的 Mono.Cecil 生成 `Data/snapshot-schema.json`。运行时通过官方 `ModReflect` 访问字段。字段表记录程序集模块标识，因此游戏或支持的联动 DLL 改变后需要重新生成。
 
-The aggregate build uses the freshly compiled GunsmithExpansion, Moneylending and KeptShotgun DLLs. To include CorpPresence, pass the exact DLL you will use:
+GunsmithExpansion, Moneylending and KeptShotgun follow the F5 Quick Save Plus compatibility spec ([English](F5SnapshotSave/spec/SPEC.en.md), [中文](F5SnapshotSave/spec/SPEC.zh.md)). Each of their build scripts writes the field table of the DLL it has just compiled to `Data/f5-snapshot-fields.json` with `F5SnapshotSave/tools/generate_spec_fields.ps1`, so the Plus schema does not include these three mods. Since 0.8.0 F5SnapshotSave no longer supports CorpPresence, and its snapshot field-schema generator `F5SnapshotSave/tools/generate_snapshot_schema.ps1` leaves CorpPresence out. Build all mods with:
 
-总构建脚本使用本轮编译的枪匠拓展、放贷、持枪抢劫 DLL。需要与 CorpPresence 联动时，传入将实际运行的 DLL：
+枪匠拓展、放贷、持枪抢劫遵守 F5 存档加强版兼容规范（[English](F5SnapshotSave/spec/SPEC.en.md)、[中文](F5SnapshotSave/spec/SPEC.zh.md)）。它们的构建脚本用 `F5SnapshotSave/tools/generate_spec_fields.ps1` 为刚编译的 DLL 生成字段表 `Data/f5-snapshot-fields.json`，因此加强版的字段表不包含这三个 Mod。加强版 0.8.0 起不再支持公司增强 CorpPresence，加强版的快照字段表生成器 `F5SnapshotSave/tools/generate_snapshot_schema.ps1` 不放入它。构建全部 Mod：
 
 ```powershell
-pwsh -File ./build-mods.ps1 -GameDir 'E:\SteamLibrary\steamapps\common\Probably Stolen' -OutDir 'C:\Temp\ProbablyStolenMods' -CorpPresenceDll 'C:\Path\CorpPresence.dll'
+pwsh -File ./build-mods.ps1 -GameDir 'E:\SteamLibrary\steamapps\common\Probably Stolen' -OutDir 'C:\Temp\ProbablyStolenMods'
 ```
 
-The individual F5SnapshotSave build script accepts `-IntegrationAssemblies` for explicit DLL paths; when omitted, it discovers supported integrations in the game installation. Rebuild the schema for the integration versions present when taking or restoring a snapshot.
+The individual F5SnapshotSave build script accepts `-IntegrationAssemblies` for explicit DLL paths; when omitted, it looks for the supported integrations in the game's `Mods` folder and in the Workshop folder of the same Steam library (`steamapps\workshop\content\4348910`). Rebuild the schema for the integration versions present when taking or restoring a snapshot.
 
-单独构建加强版时，可用 `-IntegrationAssemblies` 指定 DLL 路径；省略时自动查找游戏目录中支持的联动。保存和恢复快照时使用的联动版本应与生成字段表时一致。
+单独构建加强版时，可用 `-IntegrationAssemblies` 指定 DLL 路径；省略时在游戏目录的 `Mods` 文件夹和同一 Steam 库的创意工坊文件夹（`steamapps\workshop\content\4348910`）中查找支持的联动。保存和恢复快照时使用的联动版本应与生成字段表时一致。
 
 For Pen's Pipette, also pass `-PenPipetteDll 'C:\Path\Pen_mod_pipette.dll'` to the aggregate build. Version 1.1.3 is the integration target for this update. Third-party DLLs are supplied locally and are not bundled with the source project.
 

@@ -5,7 +5,7 @@ using System.Globalization;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("KeptShotgun")]
-[assembly: System.Reflection.AssemblyVersion("1.1.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.3.0")]
 
 namespace KeptShotgun
 {
@@ -30,6 +30,9 @@ namespace KeptShotgun
             ModHelper.AddStartingPerk(ModId, PerkId, 1, StartingPerk.StartingPerkType.POSITIVE,
                 Text.PerkName, Text.PerkDescription, null, new string[0], 0, true);
             PerkIcon.Register();
+            // With the adapter (F5SnapshotSpec), F5 Quick Save Plus finds this mod's methods again for a dialogue line that
+            // calls them; it does not allow saving while such a line is shown, so in play these lines do not reach a save.
+            F5SnapshotSpec.Register();
         }
 
         public void OnDisable()

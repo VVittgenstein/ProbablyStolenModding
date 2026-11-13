@@ -6,59 +6,136 @@ namespace F5SnapshotSave
 {
     // What the graph codec needs from the game: objects that are referenced instead of copied (the store singletons,
     // their fields, and objects held in a static "instance" field), items found again by their unique ID, items stored
-    // with the game's own item encoding, and assets found by name.
+    // with the game's own item encoding, and assets found by name. Since 0.8.0 also the adapters of the mods that follow
+    // the compatibility spec, collected for this one operation, and the field access that uses them.
     internal sealed class SnapshotContext
     {
+        // The adapters of this operation (SpecAdapters.Collect). Only the objects of one save, snapshot read or put-back
+        // step hold them, never a static field (plan 2.2 point 5).
+        internal readonly AdapterSet Adapters;
         private readonly Dictionary<object, KeyValuePair<SnapshotField, List<SnapshotField>>> knownPaths =
             new Dictionary<object, KeyValuePair<SnapshotField, List<SnapshotField>>>(ReferenceComparer.Instance);
-        // Objects of an integration mod that are found again after loading through fields, dictionary keys and
-        // indexes (CorpLink).
-        private readonly Dictionary<object, KeyValuePair<SnapshotField, PathStep[]>> modPaths =
-            new Dictionary<object, KeyValuePair<SnapshotField, PathStep[]>>(ReferenceComparer.Instance);
         private readonly HashSet<object> placedItems = new HashSet<object>(ReferenceComparer.Instance);
         private readonly Dictionary<int, GameItem> itemsByUid = new Dictionary<int, GameItem>();
         private readonly HashSet<int> sharedUids = new HashSet<int>();
-        private static readonly Dictionary<Type, List<SnapshotField>> staticHolders = new Dictionary<Type, List<SnapshotField>>();
+        // Field lists of this operation, which depend on the adapters collected for it. The two lists of a type are kept
+        // apart: the copy list is never taken from the path cache (plan 3.3).
+        private readonly Dictionary<Type, List<SnapshotField>> copyFields = new Dictionary<Type, List<SnapshotField>>();
+        private readonly Dictionary<Type, List<SnapshotField>> pathFields = new Dictionary<Type, List<SnapshotField>>();
+        private readonly Dictionary<Type, List<SnapshotField>> staticHolders = new Dictionary<Type, List<SnapshotField>>();
 
+        private SnapshotContext(AdapterSet adapters)
+        {
+            Adapters = adapters ?? new AdapterSet(null);
+        }
+
+        // Collects the adapters for this context alone.
         internal static SnapshotContext Create()
         {
-            var ctx = new SnapshotContext();
+            return Create(SpecAdapters.Collect());
+        }
+
+        internal static SnapshotContext Create(AdapterSet adapters)
+        {
+            var ctx = new SnapshotContext(adapters);
             ctx.AddStoreRoots();
             ctx.CollectItems();
             return ctx;
         }
 
-        // The state of an integration mod (CorpLink): called for every snapshot that is written, and for a snapshot
-        // that is read only when it points at such state.
-        private bool modLinked;
-        internal void LinkModState()
+        // Field access (0.8.0, spec 4.1). An instance field goes by the runtime type of the object: every instance field
+        // of an object whose type belongs to a mod that follows the spec, also one declared in a base type of the game or
+        // of another mod, is read and written through that mod's adapter. Its functions run ModReflect with that mod's
+        // scope; a base type in another mod is a prerequisite of it (otherwise the game's scan flags the reference).
+        // Other objects go through this mod's ModReflect, which checks the field's declaring type. A static field goes by
+        // its declaring type; the static fields of such a mod are only read.
+        internal object GetInstance(object target, string name)
         {
-            if (modLinked)
-                return;
-            modLinked = true;
-            CorpLink.Prepare(this);
+            Adapter adapter = Adapters.For(target.GetType().Assembly);
+            return adapter != null ? adapter.Get(target, name) : ModReflect.Get(target, name);
         }
 
-        internal bool AddModPath(object o, SnapshotField holder, PathStep[] steps)
+        internal void SetInstance(object target, string name, object value)
         {
-            if (modPaths.ContainsKey(o) || knownPaths.ContainsKey(o))
-                return false;
-            modPaths[o] = new KeyValuePair<SnapshotField, PathStep[]>(holder, steps);
-            return true;
+            Adapter adapter = Adapters.For(target.GetType().Assembly);
+            if (adapter != null)
+                adapter.Set(target, name, value);
+            else
+                ModReflect.Set(target, name, value);
         }
 
-        internal bool TryFindModPath(object o, out SnapshotField holder, out PathStep[] steps)
+        internal object GetStatic(Type declaring, string name)
         {
-            KeyValuePair<SnapshotField, PathStep[]> known;
-            if (modPaths.TryGetValue(o, out known))
+            Adapter adapter = Adapters.For(declaring.Assembly);
+            return adapter != null ? adapter.GetStatic(declaring, name) : ModReflect.GetStatic(declaring, name);
+        }
+
+        internal void SetStatic(Type declaring, string name, object value)
+        {
+            if (Adapters.For(declaring.Assembly) != null)
+                throw new NotSupportedException("static field " + declaring.FullName + "." + name + " of a mod that follows the spec is not written");
+            ModReflect.SetStatic(declaring, name, value);
+        }
+
+        // The fields of an object that is copied ('c' and 's' objects when writing and reading, AddPartialRoot): the
+        // instance fields of the type and of all its base types, constants excluded. Every type of the chain up to
+        // System.Object or System.ValueType needs a field table (the shipped one or an adapter's); otherwise this throws and
+        // the writer records the object as not storable. Up to 0.7.1 the list stopped at the first base type without a
+        // table, so that base type's fields and those above it were not written and kept their defaults after loading.
+        internal List<SnapshotField> CopyFields(Type t)
+        {
+            List<SnapshotField> list;
+            if (copyFields.TryGetValue(t, out list))
+                return list;
+            list = new List<SnapshotField>();
+            for (Type cur = t; cur != null && cur != typeof(object) && cur != typeof(ValueType); cur = cur.BaseType)
             {
-                holder = known.Key;
-                steps = known.Value;
-                return true;
+                if (!SnapshotSchema.CanDescribe(cur, Adapters))
+                    throw new SnapshotTypeException(cur, cur == t ? "no snapshot field schema for " + t.FullName
+                        : "base type " + cur.FullName + " of " + t.FullName + " has no field table");
+                AddInstanceFields(list, cur);
             }
-            holder = null;
-            steps = null;
-            return false;
+            CheckNames(t, list);
+            copyFields[t] = list;
+            return list;
+        }
+
+        // The fields followed to find existing objects by path (AddStoreRoots, FindStaticHolder): the list
+        // stops at the first base type without a field table, as up to 0.7.1. EmporiumEntry derives from MonoBehaviour,
+        // which no table describes.
+        internal List<SnapshotField> PathFields(Type t)
+        {
+            List<SnapshotField> list;
+            if (pathFields.TryGetValue(t, out list))
+                return list;
+            list = new List<SnapshotField>();
+            if (!SnapshotSchema.CanDescribe(t, Adapters))
+                throw new SnapshotTypeException(t, "no snapshot field schema for " + t.FullName);
+            for (Type cur = t; cur != null && cur != typeof(object) && cur != typeof(ValueType); cur = cur.BaseType)
+            {
+                if (!SnapshotSchema.CanDescribe(cur, Adapters))
+                    break;
+                AddInstanceFields(list, cur);
+            }
+            CheckNames(t, list);
+            pathFields[t] = list;
+            return list;
+        }
+
+        private void AddInstanceFields(List<SnapshotField> list, Type declaring)
+        {
+            foreach (SnapshotField f in SnapshotSchema.DeclaredFields(declaring, Adapters))
+            {
+                if (!f.IsStatic)
+                    list.Add(f);
+            }
+        }
+
+        private static void CheckNames(Type t, List<SnapshotField> list)
+        {
+            var names = new HashSet<string>();
+            foreach (SnapshotField field in list)
+                if (!names.Add(field.Name)) throw new SnapshotTypeException(t, "hidden field cannot be addressed through ModReflect: " + t.FullName + "." + field.Name);
         }
 
         // The store singletons and the objects in their fields are found again by path after loading; a closure that
@@ -72,7 +149,7 @@ namespace F5SnapshotSave
                 if (holder != null)
                 {
                     AddRoot(store, holder, new List<SnapshotField>());
-                    SnapshotField managerField = SnapshotSchema.Field(typeof(PlayerStore), "storeClientManager");
+                    SnapshotField managerField = SnapshotSchema.Field(typeof(PlayerStore), "storeClientManager", Adapters);
                     if (managerField != null && store.storeClientManager != null)
                         AddRoot(store.storeClientManager, holder, new List<SnapshotField> { managerField });
                 }
@@ -94,12 +171,12 @@ namespace F5SnapshotSave
         {
             if (!knownPaths.ContainsKey(root))
                 knownPaths[root] = new KeyValuePair<SnapshotField, List<SnapshotField>>(holder, prefix);
-            foreach (SnapshotField f in Codec.InstanceFields(root.GetType()))
+            foreach (SnapshotField f in PathFields(root.GetType()))
             {
                 object v;
                 try
                 {
-                    v = f.GetValue(root);
+                    v = f.GetValue(this, root);
                 }
                 catch (Exception)
                 {
@@ -117,24 +194,24 @@ namespace F5SnapshotSave
         // A static field that currently holds the object: a field whose name contains "instance" (singletons and
         // auto-property backing fields), "<>9" (the instance of a compiler-generated lambda class), or any static
         // field for Unity objects.
-        private static SnapshotField FindStaticHolder(object o)
+        private SnapshotField FindStaticHolder(object o)
         {
             Type t = o.GetType();
             bool unity = o is UnityEngine.Object;
             for (Type cur = t; cur != null && cur != typeof(object); cur = cur.BaseType)
             {
-                if (!SnapshotSchema.CanDescribe(cur)) break;
                 List<SnapshotField> candidates;
-                if (!staticHolders.TryGetValue(cur, out candidates))
+                try
                 {
-                    candidates = new List<SnapshotField>();
-                    foreach (SnapshotField f in SnapshotSchema.DeclaredFields(cur))
-                    {
-                        if (!f.IsStatic || f.IsValueType || f.FieldTypeName == "System.String")
-                            continue;
-                        candidates.Add(f);
-                    }
-                    staticHolders[cur] = candidates;
+                    if (!SnapshotSchema.CanDescribe(cur, Adapters)) break;
+                    candidates = StaticCandidates(cur);
+                }
+                catch (Exception)
+                {
+                    // 0.8.0: an integration whose module differs from the shipped table (SnapshotSchema.DeclaredFields
+                    // throws) has no static holder; writing the object itself then records it as not storable. Up to
+                    // 0.7.1 the exception ended the whole save ("snapshot schema is out of date for CorpPresence").
+                    break;
                 }
                 foreach (SnapshotField f in candidates)
                 {
@@ -144,7 +221,7 @@ namespace F5SnapshotSave
                     object v;
                     try
                     {
-                        v = f.GetValue(null);
+                        v = f.GetValue(this, null);
                     }
                     catch (Exception)
                     {
@@ -155,6 +232,22 @@ namespace F5SnapshotSave
                 }
             }
             return null;
+        }
+
+        private List<SnapshotField> StaticCandidates(Type declaring)
+        {
+            List<SnapshotField> candidates;
+            if (staticHolders.TryGetValue(declaring, out candidates))
+                return candidates;
+            candidates = new List<SnapshotField>();
+            foreach (SnapshotField f in SnapshotSchema.DeclaredFields(declaring, Adapters))
+            {
+                if (!f.IsStatic || f.IsValueType || f.FieldTypeName == "System.String")
+                    continue;
+                candidates.Add(f);
+            }
+            staticHolders[declaring] = candidates;
+            return candidates;
         }
 
         internal bool TryFindPath(object o, out SnapshotField holder, out List<SnapshotField> chain)
