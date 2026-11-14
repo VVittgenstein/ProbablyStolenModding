@@ -134,6 +134,47 @@ namespace F5SnapshotSave
                 "Если включено, при копировании слота на экране загрузки копируются только автосохранения; если последнее сохранение сделано через F5, копия начинается с последнего автосохранения. Слот без автосохранений скопировать нельзя. Действует после «" + ApplyName() + "», без перезапуска, только для следующих копий.");
         }
 
+        // T-031: "End the Day", the button of the End of Day tablet, in the language of the game (EndOfDayUIManager.InitUI).
+        private static string EndDayName()
+        {
+            return LocHelper.GetLocalizedOrDefault("UI", "ui_end_day", "End the Day");
+        }
+
+        // T-031: the save before sleeping (SaveSettings.SleepKey, SleepSave).
+        internal static string SleepSettingLabel()
+        {
+            return T("睡前自动存档", "Save before sleeping", "Сохранять перед сном");
+        }
+
+        internal static string SleepSettingTooltip()
+        {
+            string key = F5LoadKey.Name();
+            return T("勾选后，每晚点“" + EndDayName() + "”时先存一份 F5 存档：读档界面标“| F5”，按 " + key + " 可以读取，计入 F5 存档的保留份数。",
+                "When on, clicking \"" + EndDayName() + "\" each night first makes an F5 save: it is marked \"| F5\" on the Load Game screen, " + key + " loads it, and it counts toward the F5 saves kept.",
+                "Если включено, каждый вечер при нажатии «" + EndDayName() + "» сначала делается сохранение F5: на экране загрузки оно помечено «| F5», " + key + " загружает его, и оно учитывается в числе хранимых сохранений F5.");
+        }
+
+        // T-031: the messages of the save before sleeping, shown when the next morning begins (SleepSave). extra: SavedRegenerated
+        // or empty.
+        internal static string SleepSaved(int day, PlayerStore.StoreState state, DateTime time, string extra)
+        {
+            string phase = Phase(state);
+            string key = F5LoadKey.Name();
+            return T("睡前已存档：第" + day + "天" + phase + " " + Clock(time) + extra + "，按 " + key + " 读取。",
+                "Saved before sleeping: day " + day + ", " + phase + ", " + Clock(time) + extra + ". " + key + " loads it.",
+                "Сохранено перед сном: день " + day + ", " + phase + ", " + Clock(time) + extra + ". " + key + " загружает это сохранение.");
+        }
+
+        internal static string SleepNotSaved(string reason)
+        {
+            return T("睡前没有存档：", "No save before sleeping: ", "Сохранение перед сном не сделано: ") + reason;
+        }
+
+        internal static string SleepFailed()
+        {
+            return T("睡前存档失败，详见 Player.log。", "The save before sleeping failed, see Player.log.", "Сохранение перед сном не удалось, подробности в Player.log.");
+        }
+
         // 1.8.0: the question before the limit is lowered (SaveSettingsUi).
         internal static string LowerLimitTitle()
         {

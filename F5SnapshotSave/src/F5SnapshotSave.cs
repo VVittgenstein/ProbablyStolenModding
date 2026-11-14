@@ -5,7 +5,7 @@ using System.Reflection;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5SnapshotSave")]
-[assembly: System.Reflection.AssemblyVersion("0.8.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.8.1.0")]
 
 namespace F5SnapshotSave
 {
@@ -258,6 +258,7 @@ namespace F5SnapshotSave
     // a new game). F5 calls the same SaveGame at any time in the store: in the morning, while open (also with a
     // customer at the counter), and after closing. What SaveGame leaves out is written into PlayerStore.modData,
     // which is part of the same slot file, and removed again after the save.
+    // The save before sleeping (SleepSave, T-031) is the same save, made when "End the Day" is clicked.
     internal static class QuickSave
     {
         internal static bool InProgress;
@@ -274,14 +275,42 @@ namespace F5SnapshotSave
             if (StoreUIManager.IsAnyTyping())
                 return;
 
+            bool saved;
+            List<string> mods;
+            string message = Save(store, ui, station, entry, false, out saved, out mods);
+            Report(ui, message, saved);
+            if (mods != null)
+                IncompatibleNotice.After(mods);
+        }
+
+        // T-031: the save before sleeping (SleepSave), with the same checks and the same save as the key. The message and
+        // the mods for IncompatibleNotice are returned for SleepSave to show on the next morning; the message is null when
+        // the store is not there. No key was pressed, so a text field with the focus does not stop it, and a refusal leaves
+        // out the sentence about the save a quit would return to: the game saves the next morning right after.
+        internal static string SaveBeforeSleep(out bool saved, out List<string> mods)
+        {
+            saved = false;
+            mods = null;
+            PlayerStore store = PlayerStore.HasInstance ? PlayerStore.Instance : null;
+            StoreUIManager ui = StoreUIManager.Instance;
+            StoreStation station = StoreStation.Instance;
+            EmporiumEntry entry = EmporiumEntry.Instance;
+            if (store == null || ui == null || station == null || entry == null)
+                return null;
+            return Save(store, ui, station, entry, true, out saved, out mods);
+        }
+
+        // mods: the mods for IncompatibleNotice after the message (a refused snapshot or a save), otherwise null.
+        private static string Save(PlayerStore store, StoreUIManager ui, StoreStation station, EmporiumEntry entry, bool beforeSleep,
+            out bool saved, out List<string> mods)
+        {
+            saved = false;
+            mods = null;
             bool withCounter;
             string dialogState;
-            string refusal = Refusal(store, ui, entry, out withCounter, out dialogState);
+            string refusal = Refusal(store, ui, entry, !beforeSleep, out withCounter, out dialogState);
             if (refusal != null)
-            {
-                Report(ui, refusal, false);
-                return;
-            }
+                return beforeSleep ? Text.SleepNotSaved(refusal) : refusal;
 
             // 0.8.0: a waiting customer carrying something this mod cannot store is left out of the snapshot and created
             // again by identifier after loading; the save is refused only for the counter group and for the chemical
@@ -294,14 +323,13 @@ namespace F5SnapshotSave
             catch (Exception e)
             {
                 UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "Snapshot.Capture threw: " + e);
-                Report(ui, Text.Failed(), false);
-                return;
+                return beforeSleep ? Text.SleepFailed() : Text.Failed();
             }
             Snapshot.Captured cap = outcome.Snapshot;
             if (cap == null)
             {
                 UnityEngine.Debug.LogWarning(F5SnapshotSaveMod.LogPrefix + "snapshot not possible: " + outcome.Error);
-                SavePreviewData last = SaveUIManager.GetPreview(store.saveSlotId);
+                SavePreviewData last = beforeSleep ? null : SaveUIManager.GetPreview(store.saveSlotId);
                 string refused;
                 if (outcome.Refused == Snapshot.Refusal.Feedback)
                     refused = Text.FeedbackNotStorable(last);
@@ -309,9 +337,8 @@ namespace F5SnapshotSave
                     refused = Text.CounterNotStorable(last);
                 else
                     refused = Text.QueueNotStorable(last);
-                Report(ui, refused, false);
-                IncompatibleNotice.After(outcome.Mods);
-                return;
+                mods = outcome.Mods;
+                return beforeSleep ? Text.SleepNotSaved(refused) : refused;
             }
 
             // The customer at the counter goes first into the F5ForceSave-format queue, so that F5ForceSave alone
@@ -344,20 +371,19 @@ namespace F5SnapshotSave
             UnityEngine.Debug.Log(F5SnapshotSaveMod.LogPrefix + "snapshot: " + cap.Objects + " objects, " + cap.Graph.Length + " characters"
                 + (withCounter ? ", customer at the counter '" + store.currentClientInstance.GetClientBlueprint().identifier + "', conversation " + cap.DialogState : "")
                 + (cap.Excluded > 0 ? ", " + cap.Excluded + " waiting customer(s) left out" : ""));
-            if (SlotWritten)
-            {
-                QuickHistory.RecordLatest(store.saveSlotId, SaveDetails.Make(store, station, cap.Waiting));
-                string saved = Text.Saved(station.dayCounter, store.storeState, DateTime.Now, withCounter, cap.Waiting);
-                if (cap.Excluded > 0)
-                    saved += Text.SavedRegenerated(cap.Excluded);
-                Report(ui, saved, true);
-                IncompatibleNotice.After(outcome.Mods);
-            }
-            else
-                Report(ui, Text.Failed(), false);
+            if (!SlotWritten)
+                return beforeSleep ? Text.SleepFailed() : Text.Failed();
+            saved = true;
+            mods = outcome.Mods;
+            QuickHistory.RecordLatest(store.saveSlotId, SaveDetails.Make(store, station, cap.Waiting));
+            string regenerated = cap.Excluded > 0 ? Text.SavedRegenerated(cap.Excluded) : "";
+            if (beforeSleep)
+                return Text.SleepSaved(station.dayCounter, store.storeState, DateTime.Now, regenerated);
+            return Text.Saved(station.dayCounter, store.storeState, DateTime.Now, withCounter, cap.Waiting) + regenerated;
         }
 
-        private static string Refusal(PlayerStore store, StoreUIManager ui, EmporiumEntry entry, out bool withCounter, out string dialogState)
+        // withReturnPoint: the refusals that name the save a quit would return to (the newest save of the slot) do so.
+        private static string Refusal(PlayerStore store, StoreUIManager ui, EmporiumEntry entry, bool withReturnPoint, out bool withCounter, out string dialogState)
         {
             withCounter = false;
             dialogState = Snapshot.DialogNone;
@@ -396,7 +422,7 @@ namespace F5SnapshotSave
             if (!store.IsClientPresent())
                 return null;
             if (store.storeState != PlayerStore.StoreState.OPEN)
-                return Text.CounterNotStorable(SaveUIManager.GetPreview(store.saveSlotId));
+                return Text.CounterNotStorable(withReturnPoint ? SaveUIManager.GetPreview(store.saveSlotId) : null);
             string busy = Stability.Check(store, ui, out dialogState);
             if (busy != null)
             {

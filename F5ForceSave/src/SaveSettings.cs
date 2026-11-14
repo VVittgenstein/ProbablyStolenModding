@@ -15,11 +15,14 @@ namespace F5ForceSave
         internal const string MatchKey = "manual_limit_match_game";
         internal const string CountKey = "manual_save_limit";
         internal const string CopyKey = "exclude_manual_on_copy";
+        // T-031: the save before sleeping (SleepSave), off by default.
+        internal const string SleepKey = "save_before_sleep";
         private const string Section = "存档 / Saves / Сохранения";
         private static ConfigEntry<bool> limitManual;
         private static ConfigEntry<bool> matchGame;
         private static ConfigEntry<int> manualLimit;
         private static ConfigEntry<bool> excludeManualOnCopy;
+        private static ConfigEntry<bool> saveBeforeSleep;
 
         internal static bool LimitManual { get { return limitManual == null || limitManual.Value; } }
         internal static bool MatchGame { get { return matchGame == null || matchGame.Value; } }
@@ -30,6 +33,16 @@ namespace F5ForceSave
             {
                 var live = ModConfig.Find(F5ForceSaveMod.ModId)?.Get(CopyKey) as ConfigEntry<bool>;
                 return (live ?? excludeManualOnCopy)?.Value ?? false;
+            }
+        }
+
+        // Read like ExcludeManualOnCopy, from the entry registered now, so an applied change counts at the next night.
+        internal static bool SaveBeforeSleep
+        {
+            get
+            {
+                var live = ModConfig.Find(F5ForceSaveMod.ModId)?.Get(SleepKey) as ConfigEntry<bool>;
+                return (live ?? saveBeforeSleep)?.Value ?? false;
             }
         }
 
@@ -57,6 +70,7 @@ namespace F5ForceSave
             manualLimit = config.Define(CountKey, Math.Max(1, Math.Min(MaxManualLimit, originalLimit)), Section,
                 Text.CountSettingLabel, 1, MaxManualLimit, Text.CountSettingTooltip);
             excludeManualOnCopy = config.Define(CopyKey, false, Section, Text.CopySettingLabel, Text.CopySettingTooltip);
+            saveBeforeSleep = config.Define(SleepKey, false, Section, Text.SleepSettingLabel, Text.SleepSettingTooltip);
             // Entries use the native Apply flow. The copier reads the currently
             // registered value, so applied changes do not require a restart.
         }

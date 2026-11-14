@@ -4,7 +4,7 @@ using System.Globalization;
 using HarmonyLib;
 
 [assembly: System.Reflection.AssemblyTitle("F5ForceSave")]
-[assembly: System.Reflection.AssemblyVersion("1.8.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.1.0")]
 
 namespace F5ForceSave
 {
@@ -295,6 +295,7 @@ namespace F5ForceSave
     // PlayerStore.modData, which is written into the same slot file, and put back after loading.
     // StoreClientManager.chemicalFeedbackStack (customers queued for the next day after chemical sales) is
     // ES3NonSerializable as well and is not stored; the game's own saves lose it in the same way.
+    // The save before sleeping (SleepSave, T-031) is the same save, made when "End the Day" is clicked.
     internal static class QuickSave
     {
         internal static bool InProgress;
@@ -311,12 +312,32 @@ namespace F5ForceSave
             if (StoreUIManager.IsAnyTyping())
                 return;
 
-            string refusal = Refusal(store, entry);
+            bool saved;
+            string message = Save(store, station, entry, false, out saved);
+            Report(ui, message, saved);
+        }
+
+        // T-031: the save before sleeping (SleepSave), with the same checks and the same save as the key. The message is
+        // returned for SleepSave to show on the next morning; null when the store is not there. No key was pressed, so a
+        // text field with the focus does not stop it, and a refusal leaves out the sentence about the save a quit would
+        // return to: the game saves the next morning right after.
+        internal static string SaveBeforeSleep(out bool saved)
+        {
+            saved = false;
+            PlayerStore store = PlayerStore.HasInstance ? PlayerStore.Instance : null;
+            StoreStation station = StoreStation.Instance;
+            EmporiumEntry entry = EmporiumEntry.Instance;
+            if (store == null || station == null || entry == null || StoreUIManager.Instance == null)
+                return null;
+            return Save(store, station, entry, true, out saved);
+        }
+
+        private static string Save(PlayerStore store, StoreStation station, EmporiumEntry entry, bool beforeSleep, out bool saved)
+        {
+            saved = false;
+            string refusal = Refusal(store, entry, !beforeSleep);
             if (refusal != null)
-            {
-                Report(ui, refusal, false);
-                return;
-            }
+                return beforeSleep ? Text.SleepNotSaved(refusal) : refusal;
 
             InProgress = true;
             SlotWritten = false;
@@ -335,16 +356,18 @@ namespace F5ForceSave
                 SaveExtras.Clear();
             }
 
-            if (SlotWritten)
-            {
-                QuickHistory.RecordLatest(store.saveSlotId, SaveDetails.Make(store, station, CustomerQueue.Count(store.storeClientManager)));
-                Report(ui, Text.Saved(station.dayCounter, store.storeState, DateTime.Now, CustomerQueue.Count(store.storeClientManager)), true);
-            }
-            else
-                Report(ui, Text.Failed(), false);
+            if (!SlotWritten)
+                return beforeSleep ? Text.SleepFailed() : Text.Failed();
+            saved = true;
+            int waiting = CustomerQueue.Count(store.storeClientManager);
+            QuickHistory.RecordLatest(store.saveSlotId, SaveDetails.Make(store, station, waiting));
+            return beforeSleep
+                ? Text.SleepSaved(station.dayCounter, store.storeState, DateTime.Now)
+                : Text.Saved(station.dayCounter, store.storeState, DateTime.Now, waiting);
         }
 
-        private static string Refusal(PlayerStore store, EmporiumEntry entry)
+        // withReturnPoint: the refusals that name the save a quit would return to (the newest save of the slot) do so.
+        private static string Refusal(PlayerStore store, EmporiumEntry entry, bool withReturnPoint)
         {
             if (ModHelper.IsOutsideStore())
                 return Text.OutsideStore();
@@ -362,7 +385,7 @@ namespace F5ForceSave
             // is the game's own check (currentClientInstance, cleared by DismissCurrentClient); isClientArrived is not
             // used because the game leaves it true after the customer has gone.
             if (store.IsClientPresent() || store.isClientBeingArrested || store.isHandlingShootout)
-                return Text.CustomerPresent(SaveUIManager.GetPreview(store.saveSlotId));
+                return Text.CustomerPresent(Last(store, withReturnPoint));
 
             if (HasItems(entry.backInvinvElementCounter) || HasItems(entry.afterhourInventory)
                 || HasItems(entry.responseInventory) || HasItems(entry.responseInventoryClosable)
@@ -371,9 +394,14 @@ namespace F5ForceSave
 
             List<int> notStorable = CustomerQueue.PositionsNotStorable(store.storeClientManager);
             if (notStorable.Count > 0)
-                return Text.QueueNotStorable(notStorable, SaveUIManager.GetPreview(store.saveSlotId));
+                return Text.QueueNotStorable(notStorable, Last(store, withReturnPoint));
 
             return null;
+        }
+
+        private static SavePreviewData Last(PlayerStore store, bool wanted)
+        {
+            return wanted ? SaveUIManager.GetPreview(store.saveSlotId) : null;
         }
 
         internal static bool HasItems(GameInventory inventory)
@@ -1248,6 +1276,46 @@ namespace F5ForceSave
             return T("勾选后，在读档界面复制存档位时只复制自动存档；最新一份是 F5 存档时，副本从最近一份自动存档开始。存档位没有自动存档时不能复制。点“" + ApplyName() + "”后生效，不需要重启游戏，只影响之后的复制。" + PlusNote(),
                 "When on, copying a save slot on the Load Game screen copies only the autosaves; if the newest save is an F5 save, the copy starts from the latest autosave. A slot without autosaves cannot be copied. Takes effect after \"" + ApplyName() + "\", without a restart, for later copies only." + PlusNote(),
                 "Если включено, при копировании слота на экране загрузки копируются только автосохранения; если последнее сохранение сделано через F5, копия начинается с последнего автосохранения. Слот без автосохранений скопировать нельзя. Действует после «" + ApplyName() + "», без перезапуска, только для следующих копий." + PlusNote());
+        }
+
+        // T-031: "End the Day", the button of the End of Day tablet, in the language of the game (EndOfDayUIManager.InitUI).
+        private static string EndDayName()
+        {
+            return LocHelper.GetLocalizedOrDefault("UI", "ui_end_day", "End the Day");
+        }
+
+        // T-031: the save before sleeping (SaveSettings.SleepKey, SleepSave).
+        internal static string SleepSettingLabel()
+        {
+            return T("睡前自动存档", "Save before sleeping", "Сохранять перед сном");
+        }
+
+        internal static string SleepSettingTooltip()
+        {
+            string key = F5LoadKey.Name();
+            return T("勾选后，每晚点“" + EndDayName() + "”时先存一份 F5 存档：读档界面标“| F5”，按 " + key + " 可以读取，计入 F5 存档的保留份数。" + PlusNote(),
+                "When on, clicking \"" + EndDayName() + "\" each night first makes an F5 save: it is marked \"| F5\" on the Load Game screen, " + key + " loads it, and it counts toward the F5 saves kept." + PlusNote(),
+                "Если включено, каждый вечер при нажатии «" + EndDayName() + "» сначала делается сохранение F5: на экране загрузки оно помечено «| F5», " + key + " загружает его, и оно учитывается в числе хранимых сохранений F5." + PlusNote());
+        }
+
+        // T-031: the messages of the save before sleeping, shown when the next morning begins (SleepSave).
+        internal static string SleepSaved(int day, PlayerStore.StoreState state, DateTime time)
+        {
+            string phase = Phase(state);
+            string key = F5LoadKey.Name();
+            return T("睡前已存档：第" + day + "天" + phase + " " + Clock(time) + "，按 " + key + " 读取。",
+                "Saved before sleeping: day " + day + ", " + phase + ", " + Clock(time) + ". " + key + " loads it.",
+                "Сохранено перед сном: день " + day + ", " + phase + ", " + Clock(time) + ". " + key + " загружает это сохранение.");
+        }
+
+        internal static string SleepNotSaved(string reason)
+        {
+            return T("睡前没有存档：", "No save before sleeping: ", "Сохранение перед сном не сделано: ") + reason;
+        }
+
+        internal static string SleepFailed()
+        {
+            return T("睡前存档失败，详见 Player.log。", "The save before sleeping failed, see Player.log.", "Сохранение перед сном не удалось, подробности в Player.log.");
         }
 
         // With F5 Quick Save Plus running, it handles F5 saves and its own settings of the same names apply.
