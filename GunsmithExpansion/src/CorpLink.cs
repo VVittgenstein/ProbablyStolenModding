@@ -16,6 +16,14 @@ namespace GunsmithExpansion
     //     fit. Height stays 10.
     //   - Its factory refurbishing makes a new gun of the same identifier (MeridianCo.MakeRefurbished), which clears this
     //     mod's faults, as they sit on the gun. VVittgenstein wants that kept; there is no code for it here.
+    //   - From its version 1.2.0 (2026-11-11) an entry makes its item with the entry's own Factory, and an entry without one
+    //     with CatalogEntry.MakeDefault: that mod's own goods, else ItemRegistry.Create, which makes the game directory's item
+    //     of exactly the entry's Id. These entries keep the @ before the gun's identifier, as that mod's own guns do, so
+    //     nothing was made: no sample to price (the form showed them unavailable) and nothing to deliver
+    //     (CompanyVisitors.MakeOrdered). The gun entries get that mod's own MeridianCo.MakeNew as Factory, as its own guns
+    //     have (read in its version 1.3.4: it takes off the @, makes the item with DirectoryMaster.Item and sets it factory
+    //     new); a version whose CatalogEntry has no Factory is left as before (final-strategy 325, VVittgenstein 2026-11-16,
+    //     T-034 item 6).
     // None of that mod's code or pictures is copied; its source is public to read and its README does not allow passing on
     // changed copies, so everything is done from outside, at run time. Its catalog and windows are internal, with no
     // interface for other mods, so this rests on names that may change: what is missing is logged and the link stays off,
@@ -92,6 +100,8 @@ namespace GunsmithExpansion
                     guns.Add(d);
             }
             guns.Sort((a, b) => TierOf(a) != TierOf(b) ? TierOf(a) - TierOf(b) : a.Value - b.Value);
+            Func<string, GameItem> factory = ModReflect.Has(ModReflect.New(entry), "Factory")
+                ? ModReflect.StaticMethod<Func<string, GameItem>>(meridian, "MakeNew") : null;
             var entries = new List<object>();
             foreach (GunDef d in guns)
             {
@@ -101,6 +111,8 @@ namespace GunsmithExpansion
                 ModReflect.Set(e, "MinTier", TierOf(d));
                 ModReflect.Set(e, "Label", d.NameZh);
                 ModReflect.Set(e, "LabelEn", d.NameEn);
+                if (factory != null)
+                    ModReflect.Set(e, "Factory", factory);
                 entries.Add(e);
             }
 
@@ -126,7 +138,8 @@ namespace GunsmithExpansion
             harmony.Patch(catalog, postfix: new HarmonyMethod(AccessTools.Method(typeof(CorpLink), nameof(CatalogPostfix))));
             harmony.Patch(shell, postfix: new HarmonyMethod(AccessTools.Method(typeof(CorpLink), nameof(ShellPostfix))));
             harmony.Patch(order, prefix: new HarmonyMethod(AccessTools.Method(typeof(CorpLink), nameof(OrderPrefix))));
-            GunsmithMod.Log("linked with CorpPresence: " + entries.Count + " guns on the Meridian form, crates " + crateWidth + " x " + CrateHeight);
+            GunsmithMod.Log("linked with CorpPresence: " + entries.Count + " guns on the Meridian form" + (factory != null ? ", made by MeridianCo.MakeNew" : "")
+                + ", crates " + crateWidth + " x " + CrateHeight);
         }
 
         private static int TierOf(GunDef d)

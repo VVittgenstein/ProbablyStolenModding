@@ -10,7 +10,7 @@ namespace GunsmithExpansion
     // game's own chemistry (ChemicalHelper, ChemFinisherRecipe, MachineChemFinisher; read 2026-11-04):
     //   - Nitrocellulose, a liquid of this mod (gse_nitrocellulose), forms in a chemistry container that holds plant
     //     matter (cellulose) and acid while the container is between 40 and 90 degrees: each second 1% of the smaller of
-    //     the two (at least 10 microlitres) turns into as much nitrocellulose and as much water (the water a nitration
+    //     the two (at least 100 microlitres) turns into as much nitrocellulose and as much water (the water a nitration
     //     gives off). Kotton fabric goes into the game's blender as 40 ml of plant matter; the plant matter of the game's
     //     own plants works the same.
     //   - The game's chem finisher has a recipe for propellant: 5 ml of a dry mix a can, nitrocellulose the active
@@ -33,7 +33,7 @@ namespace GunsmithExpansion
         internal const double NitrationMinTemp = 40;
         internal const double NitrationMaxTemp = 90;
         internal const double NitrationShare = 0.01;
-        internal const int NitrationMinStep = 10;
+        internal const int NitrationMinStep = 100; // VVittgenstein 2026-11-16 (final-strategy 328, T-034); 10 until 0.7.7
         internal const int HighGrade = 80;
         internal const int LowGrade = 45;
         internal const int SolventAlcoholPercent = 60;
