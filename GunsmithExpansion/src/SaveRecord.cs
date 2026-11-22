@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using UnityEngine;
 
 namespace GunsmithExpansion
 {
@@ -44,8 +45,116 @@ namespace GunsmithExpansion
             }
         }
 
-        // No step yet: the first ones will be those of the release after 0.7.0, for saves that have the record, as new Step("<version>-<what>", true, <method>).
-        private static readonly Step[] Steps = { };
+        // For saves that have the record, as new Step("<version>-<what>", true, <method>); the version of T-013's release is not set yet, so its
+        // step is named after the task.
+        private static readonly Step[] Steps =
+        {
+            new Step("t013-removed-guns", true, RemoveTakenOut),
+        };
+
+        // The guns W045, W122, W132 and the gun mod A041, taken out of the mod in T-013 (final-strategy 341 ③; data/removed.tsv): what of them is
+        // in the store, in a container or mounted on a gun, with their frames and printer chips, goes, for what was paid for it or, never
+        // bought, its value (a printed frame's); a phone order of their chips still on its way is paid back as the old catalog priced it; a
+        // reservation of one of the three guns is called off without the reputation loss, its deposit going back to the customer. The game
+        // rebuilds an item it no longer knows from the save under its identifier, with its saved value and tags (DirectoryMaster.Item:
+        // ItemDirectory.CreateEmptyItem), so they are found by identifier; the mod no longer registers them.
+        internal static readonly string[] TakenOutGuns = { "gse_w045", "gse_w122", "gse_w132" };
+        internal const string TakenOutMod = "gse_a041";
+        // the level of each gun's chips (its tier), for the old catalog's price of a chip on order (Production.ChipValueOfLevel)
+        private static readonly int[] TakenOutLevels = { 3, 2, 1 };
+
+        private static string RemoveTakenOut()
+        {
+            PlayerStore store = PlayerStore.Instance;
+            EmporiumEntry entry = EmporiumEntry.Instance;
+            if (store == null || entry == null)
+                throw new InvalidOperationException("the store is not there yet");
+            var ids = new HashSet<string> { TakenOutMod };
+            foreach (string gun in TakenOutGuns)
+            {
+                ids.Add(gun);
+                ids.Add("gse_frame_" + gun.Substring(4));
+                ids.Add("gse_chip_" + gun.Substring(4));
+            }
+            long refund = 0;
+            int items = 0;
+            foreach (GameItem item in new List<GameItem>(entry.GetAllOwnedItems(false, true)))
+            {
+                if (item == null || item.identifier == null || !ids.Contains(item.identifier))
+                    continue;
+                long paid = item.IsTag("BOUGHT_PRICE_TAG") ? item.GetTagReadonly("BOUGHT_PRICE_TAG").GetInt() : item.unitValue;
+                refund += Math.Max(0, paid) * Math.Max(1, item.unitCount);
+                items += Math.Max(1, item.unitCount);
+                GunsmithMod.Log("taken out: " + item.identifier + ", " + paid + " back");
+                item.Destroy();
+            }
+            int orders = 0;
+            for (int i = 0; i < TakenOutGuns.Length; i++)
+            {
+                int markup = Difficulty.Rules != null ? Difficulty.Rules.retiredSupplierMarkup : 15;
+                int price = (int)Math.Ceiling(Production.ChipValueOfLevel(TakenOutLevels[i]) * Phone.PriceFactor * (100 + markup) / 100.0);
+                int n = Phone.RemoveOrders("gse_chip_" + TakenOutGuns[i].Substring(4));
+                orders += n;
+                refund += (long)n * price;
+            }
+            int deposits;
+            int reservations = Reservations.CancelGuns(new HashSet<string>(TakenOutGuns), out deposits);
+            if (refund > 0)
+                store.ModCash((int)Math.Min(int.MaxValue, refund), true);
+            GunsmithMod.Log("taken out of the mod: " + items + " items and " + orders + " chip orders, " + refund + " credits back; "
+                + reservations + " reservations called off, deposits " + deposits);
+            var told = new List<string>();
+            if (items + orders > 0)
+                told.Add(string.Format(Text.Pick("已下架的“掠影”无托步枪、“雾港”冲锋枪、“落日”雕花左轮与“弧线”枪托（含机匣、芯片与在途的芯片订单）共 {0} 件已移除，退还 {1} 信用点。",
+                    "{0} pieces of the Glimpse Bullpup Rifle, Fogport SMG, Sundown Engraved Revolver and Arcline Stock, which are no longer in the mod (with their frames, chips and chip orders on the way), were removed; {1} credits paid back."),
+                    items + orders, refund));
+            if (reservations > 0)
+                told.Add(string.Format(Text.Pick("这三把枪的 {0} 个预订已取消，不影响声望，定金 {1} 信用点退还给顾客。",
+                    "{0} reservations of these three guns were called off without any loss of reputation; the deposits of {1} credits went back to the customers."),
+                    reservations, deposits));
+            return told.Count > 0 ? string.Join("\n\n", told.ToArray()) : null;
+        }
+
+        internal const string UpdateWindowId = "gse_update_notice";
+
+        internal static void ShowUpdatePopup(string version, string details)
+        {
+            string message = string.Format(Text.Pick("枪匠拓展已更新到 {0}：{1}", "Gunsmith Expansion updated to {0}: {1}"), version, details);
+            CustomUIManager manager = CustomUIManager.Instance;
+            if (manager == null)
+            {
+                if (StoreUIManager.Instance != null)
+                    StoreUIManager.Instance.Notify(message, "default");
+                return;
+            }
+            if (manager.IsOpen(UpdateWindowId))
+                manager.CloseWindow(UpdateWindowId);
+            string layer = StoreUIManager.Instance != null ? "meta" : "menu";
+            CustomUIBuilder b = manager.CreateWindow(UpdateWindowId, Text.Pick("枪匠拓展", "Gunsmith Expansion"), layer);
+            b.SetSize(760f, 320f).Center().SetCloseOnEscape(true);
+            b.AddLabel(message, "body");
+            if (b.Last != null)
+            {
+                if (b.Last.text != null)
+                    b.Last.text.enableWordWrapping = true;
+                b.Last.SetPreferredSize(700f, 180f);
+            }
+            b.AddSpace(8f);
+            b.BeginRow(12f, TextAnchor.MiddleCenter);
+            b.AddFlexibleSpace();
+            b.AddButton(Text.Pick("好的。", "Okay."), () =>
+            {
+                if (CustomUIManager.Instance != null && CustomUIManager.Instance.IsOpen(UpdateWindowId))
+                    CustomUIManager.Instance.CloseWindow(UpdateWindowId);
+            }, "ok");
+            if (b.Last != null)
+                b.Last.SetFixedWidth(180f);
+            b.AddFlexibleSpace();
+            b.End();
+            CustomUIWindow window = b.Show();
+            if (window != null)
+                window.BringToFront();
+        }
 
         private static string Today()
         {
@@ -94,7 +203,10 @@ namespace GunsmithExpansion
                     if (first == BeforeRecords)
                         ModHelper.SetModData(GunsmithMod.ModId, HistoryKey, first);
                 }
-                bool heldMod = ModHelper.GetModData(GunsmithMod.ModId, FirstKey, version) == BeforeRecords;
+                // The steps are for saves that had the record before this load (final-strategy 295): a save from before 0.7 gets its record now
+                // and goes through no step, as does a save this mod was just added to. Until T-013 this read the first version and ran the
+                // steps for the saves from before 0.7 only; the list was empty, so nothing ran either way.
+                bool heldMod = last != null;
                 var done = new List<string>((ModHelper.GetModData(GunsmithMod.ModId, DoneKey, "") ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries));
                 var told = new List<string>();
                 foreach (Step step in Steps)
@@ -128,8 +240,8 @@ namespace GunsmithExpansion
                     ModHelper.SetModData(GunsmithMod.ModId, VersionKey, version);
                     GunsmithMod.Log("save record: was " + (last ?? "without a record") + ", now " + version + "; history " + ModHelper.GetModData(GunsmithMod.ModId, HistoryKey, ""));
                 }
-                if (told.Count > 0 && StoreUIManager.Instance != null)
-                    StoreUIManager.Instance.Notify(string.Format(Text.Pick("枪匠拓展已更新到 {0}：{1}", "Gunsmith Expansion updated to {0}: {1}"), version, string.Join(" ", told.ToArray())), "default");
+                if (told.Count > 0)
+                    ShowUpdatePopup(version, string.Join("\n\n", told.ToArray()));
             }
             catch (Exception e)
             {

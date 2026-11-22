@@ -6,41 +6,31 @@ using UnityEngine;
 
 namespace GunsmithExpansion
 {
-    // Phone orders from the retired gunsmith (final-strategy 33 ②, 47). On his first visit with this mod he leaves his
-    // number, 4867 (G U N S on a phone keypad), and from then on it is in the phone book. A call lists the catalog for
-    // the weapon permit held; an order is paid in full at once, at the item's value × 1.3 and then the game's retired
-    // supplier markup of the difficulty (DifficultyRules.retiredSupplierMarkup: 0, 15, 30 or 45%), and he brings it
-    // 2 days later. At most 3 items are ordered a week (days 1 to 7, 8 to 14 and so on). The catalog grows with the
-    // permit (final-strategy 45): the game's retired gunsmith's printer chips that he stocks regardless of the permit
-    // and this mod's tier one printer chips at first; with weapon permit II also the printing modules, the chips he
-    // stocks more often with a higher permit and this mod's tier two chips; with permit III this mod's tier three
-    // chips (the division of the game's items is the Agent's). The contact is a StorePhoneClient in
-    // PlayerStore.PhoneClientDict and goes into the save with the game's own contacts; pending orders and the week's
-    // count are kept in PlayerStore.modData.
+    // The retired gunsmith's phone (final-strategy 33 ②, 47; T-013: 300, 340, 344, 354). On his first visit with this mod he leaves his
+    // number, 4867 (G U N S on a phone keypad), and from then on it is in the phone book. Until T-013 a call listed his catalog of chips,
+    // modules, cabinets, the chip box and four material packs; that catalog went to Lincoln Arms (final-strategy 300; LincolnGoods,
+    // LincolnPhone), and a call now offers his three blind boxes (BlindBoxes). Orders paid before the update are still brought (354):
+    // their list stays in PlayerStore.modData as before and his courier brings them with the boxes.
     //
-    // Deliveries: every night each pending order comes one day closer; when one is due, his visit is queued for the
-    // next morning (PlayerStore.QueueFuturClient), and he brings every due order in its box (DeliveryBoxes), paid for.
-    // With no room for a box anywhere he stays at the counter until the player has made some (HandOver). An order he
-    // could not hand over because the store did not serve him queues him again the night after.
+    // Deliveries: every night each pending order comes one day closer; when one is due, his courier is queued for the next morning
+    // (PlayerStore.QueueFuturClient), and brings every due order in its box (DeliveryBoxes), paid for. With no room for a box anywhere
+    // the courier stays at the counter until the player has made some (HandOver). An order he could not hand over because the store
+    // did not serve him queues him again the night after.
     //
-    // Materials (T-005; VVittgenstein 2026-11-08 04:30, current/T-005 quote 19): the catalog
-    // also has four packs, which are not counted in the 3 a week. Gun parts x6 (185) and the repair pack (265: metal screws 2, wires 2,
-    // scrap metal 4, gun parts 2, rubbing alcohol 2) from the start, metal ingots x6 (355) with weapon permit II, high purity metal ingots x8
-    // (600) with permit III. The prices are those of the normal difficulty; Agent's decision: on the others they take the game's retired
-    // supplier markup as the retired gunsmith's other goods do, price x (100 + markup) / 115 rounded. A pack remains one saved order
-    // and is filled in its own labelled carton before that carton is handed over. An order without room stays with the courier.
+    // The material packs (T-005; VVittgenstein 2026-11-08 04:30, current/T-005 quote 19) are defined here and sold by Lincoln Arms:
+    // gun parts x6 (185), the repair pack (265: metal screws 2, wires 2, scrap metal 4, gun parts 2, rubbing alcohol 2), metal ingots x6
+    // (355), high purity metal ingots x8 (600); the prices of the normal difficulty, on the others price x (100 + markup) / 115 rounded.
+    // A pack is filled in its own labelled carton before that carton is handed over.
     internal static class Phone
     {
         internal const long Number = 4867;
         internal const string DialogFuncId = "GseRetiredGunsmith";
         internal const string CourierId = "gseRetiredGunsmithDelivery";
         internal const int DeliveryDays = 2;
-        internal const int WeeklyLimit = 3;
+        // the old catalog's factor on the value, kept by Lincoln Arms for the goods that came from it (final-strategy 350 ①)
         internal const double PriceFactor = 1.3;
         private const string GivenKey = "phone_given";
         private const string OrdersKey = "phone_orders";
-        private const string WeekKey = "phone_week";
-        private const string WeekCountKey = "phone_week_count";
 
         internal static readonly string[] AttachmentChips =
         {
@@ -165,13 +155,6 @@ namespace GunsmithExpansion
             purity = at > 0 ? orderId.Substring(at + 1) : null;
         }
 
-        internal sealed class Menu
-        {
-            internal string Label;
-            internal readonly List<Menu> Children = new List<Menu>();
-            internal readonly List<string> Items = new List<string>();
-        }
-
         internal sealed class Order
         {
             internal string Id;
@@ -180,7 +163,7 @@ namespace GunsmithExpansion
 
         internal static void Register()
         {
-            PhoneClientList.DialogFuncs[DialogFuncId] = Call;
+            PhoneClientList.DialogFuncs[DialogFuncId] = BlindBoxes.Call;
             StoreClientListDict.storeClientDict[CourierId] = CreateCourier;
         }
 
@@ -197,18 +180,16 @@ namespace GunsmithExpansion
 
         internal static string Name()
         {
-            return LocHelper.GetLocalizedClientName("name_retired_gunsmith");
+            return LocGenderHelper.Resolve(LocHelper.GetLocalizedClientName("name_retired_gunsmith"), (LocGenderHelper.LocGender)1);
         }
 
-        // His greeting on the visit that gives the number gets one more sentence.
+        // His greeting on the visit that gives the number gets one more sentence (the dialogue draft's 7-1, first row).
         internal static void AttachIntro(StoreClient client)
         {
             Dialogue d = client != null ? client.mainDialogue : null;
             if (d == null || Given())
                 return;
-            d.SetText(d.title, d.plainText + " " + string.Format(Text.Pick(
-                "以后缺芯片、模组或材料，打 {0} 找我。先付钱，两天后送到。",
-                "If you need chips, modules or materials, call me at {0}. Pay up front and I'll bring them two days later."), Number));
+            d.SetText(d.title, d.plainText + " " + LincolnTexts.RetiredNumber.Get());
             d.endAction = (Action)Delegate.Combine(d.endAction, new Action(Give));
         }
 
@@ -247,102 +228,9 @@ namespace GunsmithExpansion
             contact.dialedBefore = true;
         }
 
-        private static Menu Group(string label, IEnumerable<string> items)
-        {
-            var menu = new Menu { Label = label };
-            menu.Items.AddRange(items);
-            return menu;
-        }
-
-        internal static Menu BuildCatalog(int permit)
-        {
-            var root = new Menu();
-            var materials = new List<string>();
-            foreach (Pack p in MaterialPacks)
-            {
-                if (Math.Max(1, permit) >= p.Permit)
-                    materials.Add(p.Id);
-            }
-            root.Children.Add(Group(Text.Pick("材料", "Materials"), materials));
-            if (permit >= 2)
-                root.Children.Add(Group(Text.Pick("打印机模组", "Printer modules"), Modules));
-            root.Children.Add(Group(Text.Pick("配件与弹匣的3D打印机芯片", "Attachment and magazine 3D printer chips"), AttachmentChips));
-            var weapons = new List<string>(WeaponChips);
-            if (permit >= 2)
-                weapons.AddRange(PermitIIWeaponChips);
-            root.Children.Add(Group(Text.Pick("简易枪械、刀具与零件的3D打印机芯片", "Makeshift gun, blade and part 3D printer chips"), weapons));
-            var cabinets = new List<string>();
-            foreach (string id in new[] { Cabinets.SmallId, Cabinets.LargeId })
-            {
-                if (Cabinets.Registered(id))
-                    cabinets.Add(id);
-            }
-            if (ChipBox.Registered())
-                cabinets.Add(ChipBox.Id);
-            if (cabinets.Count > 0)
-                root.Children.Add(Group(Text.Pick("枪柜与芯片盒", "Gun cabinets and chip boxes"), cabinets));
-            string[] tiers = { "一档", "二档", "三档" };
-            for (int t = 0; t < tiers.Length && t < Math.Max(1, permit); t++)
-            {
-                var tier = new Menu { Label = string.Format(Text.Pick("{0}枪械的3D打印机芯片", "{0} gun 3D printer chips"), Text.TierName(tiers[t])) };
-                var classes = new Dictionary<string, Menu>();
-                foreach (GunDef d in GunsmithExpansion.Catalog.Guns)
-                {
-                    if (d.Tier != tiers[t] || !Production.HasChip(d))
-                        continue;
-                    Menu cls;
-                    if (!classes.TryGetValue(d.ClassName, out cls))
-                    {
-                        cls = new Menu { Label = Text.ClassName(d.ClassName) };
-                        classes[d.ClassName] = cls;
-                        tier.Children.Add(cls);
-                    }
-                    cls.Items.Add(Production.ChipId(d));
-                }
-                root.Children.Add(tier);
-            }
-            return root;
-        }
-
-        // Every item of the catalog for the permit held, in menu order.
-        internal static List<string> Catalog()
-        {
-            var items = new List<string>();
-            Collect(BuildCatalog(GunSupply.PermitTop()), items);
-            return items;
-        }
-
-        private static void Collect(Menu menu, List<string> items)
-        {
-            items.AddRange(menu.Items);
-            foreach (Menu child in menu.Children)
-                Collect(child, items);
-        }
-
-        // The item made to read the value is destroyed again: from game 1.0.0.12 a shown choice is checked again every
-        // 0.2 seconds (DialogChoiceBubble.Update), so a page's prices are worked out once when it is built (ShowMenu,
-        // CanAfford), and an item left behind on each check piled up for as long as the page stayed open.
-        internal static int Price(string id)
-        {
-            Pack pack = FindPack(id);
-            if (pack != null)
-                return PackPrice(pack);
-            GameItem item = DirectoryMaster.Item(id, false);
-            long value = item != null ? item.unitValue : 0;
-            if (item != null)
-                item.Destroy();
-            int markup = Difficulty.Rules != null ? Difficulty.Rules.retiredSupplierMarkup : 0;
-            return (int)Math.Ceiling(value * PriceFactor * (100 + markup) / 100.0);
-        }
-
         internal static int Week()
         {
             return Math.Max(0, StoreStation.GetDayCounter() - 1) / 7;
-        }
-
-        internal static int OrderedThisWeek()
-        {
-            return ModHelper.GetModDataInt(GunsmithMod.ModId, WeekKey, -1) == Week() ? ModHelper.GetModDataInt(GunsmithMod.ModId, WeekCountKey, 0) : 0;
         }
 
         internal static List<Order> Orders()
@@ -393,6 +281,16 @@ namespace GunsmithExpansion
             return result;
         }
 
+        // The pending orders of an item taken out of the mod (SaveRecord.RemoveTakenOut): how many there were.
+        internal static int RemoveOrders(string id)
+        {
+            List<Order> orders = Orders();
+            int n = orders.RemoveAll(o => o.Id == id);
+            if (n > 0)
+                SaveOrders(orders);
+            return n;
+        }
+
         internal static int OrderItemCount(Order order)
         {
             Pack pack = FindPack(order.Id);
@@ -405,46 +303,6 @@ namespace GunsmithExpansion
             foreach (Order o in orders)
                 entries.Add(o.Id + "," + o.Nights.ToString(CultureInfo.InvariantCulture));
             ModHelper.SetModData(GunsmithMod.ModId, OrdersKey, string.Join(";", entries.ToArray()));
-        }
-
-        internal static bool CanAfford(int price)
-        {
-            return PlayerStore.Instance != null && OrderedThisWeek() < WeeklyLimit && PlayerStore.Instance.GetCash() >= price;
-        }
-
-        // A pack of materials is not counted in the week's 3.
-        internal static bool CanAffordPack(int price)
-        {
-            return PlayerStore.Instance != null && PlayerStore.Instance.GetCash() >= price;
-        }
-
-        internal static bool CanOrder(string id)
-        {
-            return FindPack(id) != null ? CanAffordPack(Price(id)) : CanAfford(Price(id));
-        }
-
-        internal static bool PlaceOrder(string id)
-        {
-            Pack pack = FindPack(id);
-            int price = Price(id);
-            if (pack != null ? !CanAffordPack(price) : !CanAfford(price))
-                return false;
-            PlayerStore.Instance.ModCash(-price, true);
-            List<Order> orders = Orders();
-            if (pack != null)
-            {
-                orders.Add(new Order { Id = pack.Id, Nights = DeliveryDays });
-                SaveOrders(orders);
-                GunsmithMod.Log("phone order " + id + " for " + price + ", " + pack.Items.Length + " items, not counted in the week's " + WeeklyLimit);
-                return true;
-            }
-            orders.Add(new Order { Id = id, Nights = DeliveryDays });
-            SaveOrders(orders);
-            int count = OrderedThisWeek() + 1;
-            ModHelper.SetModDataInt(GunsmithMod.ModId, WeekKey, Week());
-            ModHelper.SetModDataInt(GunsmithMod.ModId, WeekCountKey, count);
-            GunsmithMod.Log("phone order " + id + " for " + price + ", " + count + " this week");
-            return true;
         }
 
         // Each night (StorePhoneClient.OnEndDay, from PlayerStore.EndNight).
@@ -532,20 +390,33 @@ namespace GunsmithExpansion
         }
 
         // On his line appearing, so that what he says fits what happened. Without room he asks for some and stays; the choice
-        // tries again, as often as it takes. The game does not stop items from being dragged while a choice is shown.
+        // tries again, as often as it takes. The game does not stop items from being dragged while a choice is shown. With a blind
+        // box among the goods he says the lines of the dialogue draft's 7-2; with only orders of the old catalog, the lines of before.
         private static void HandOver(StoreClient courier, Dialogue line)
         {
-            string elsewhere;
+            bool blind = BlindBoxes.AnyDue();
+            string elsewhere, boxElsewhere;
+            int boxes;
             int noRoom = Deliver(out elsewhere);
+            noRoom += BlindBoxes.Deliver(out boxElsewhere, out boxes);
+            if (elsewhere == null)
+                elsewhere = boxElsewhere;
             if (line.choices != null)
                 line.choices.Clear();
             if (noRoom > 0)
             {
-                line.SetText(courier.displayName, Text.Pick("货到了，可店里哪儿都放不下。你腾个地方，我等着。",
+                line.SetText(courier.displayName, blind ? LincolnTexts.BoxNoRoom.Get() : Text.Pick("货到了，可店里哪儿都放不下。你腾个地方，我等着。",
                     "Your order's here, but there's no room for it anywhere. Clear a space, I'll wait."));
                 line.SetEndAction(null);
-                Dialogue cleared = new Dialogue().SetText("PLAYER", Text.Pick("腾好了。", "There's room now."));
+                Dialogue cleared = new Dialogue().SetText("PLAYER", LincolnTexts.Cleared.Get());
                 line.AddChoice(DirectoryMaster.Item("$", true), "cleared", "", cleared, () => HandOver(courier, cleared.NextDialogue()));
+                return;
+            }
+            if (blind)
+            {
+                line.SetText(courier.displayName, elsewhere != null ? LincolnTexts.BoxDeliveredElsewhere.Format(elsewhere) : LincolnTexts.BoxDelivered.Get());
+                line.SetEndAction(null);
+                line.NextDialogue().SetText(courier.displayName, LincolnTexts.BoxBye.Get()).SetEndAction(LeaveAfterHandOver);
                 return;
             }
             line.SetText(courier.displayName, elsewhere != null
@@ -561,38 +432,33 @@ namespace GunsmithExpansion
                 DialogUIManager.Instance.CurrentClientLeave(1f);
         }
 
-        // Built like the game's couriers that hand over goods without a sale (StoreClientListSupplier.CreateCourrierChemFree).
+        // Built like the game's couriers that hand over goods without a sale (StoreClientListSupplier.CreateCourrierChemFree). From
+        // T-013 his courier: the lines of 7-2 speak of the retired gunsmith as the old man (the dialogue draft names the speaker 送货员).
         internal static StoreClient CreateCourier()
         {
             var c = new StoreClient();
             c.identifier = CourierId;
-            c.displayName = Name();
+            c.displayName = Text.Pick("送货员", "Courier");
             c.spriteName = SpriteDict.GetRandomLowerLevelSpriteName();
             c.clientFaction = "FACTION_LOWER_LEVEL";
             c.isBargainAvailable = false;
             c.clientIntent = (StoreClient.ClientIntent)2;
             c.isRegularSellDisable = true;
-            c.mainDialogue.SetText(c.displayName, Text.Pick("你电话里订的货，我送来了。钱已经付过了。", "Here's what you ordered on the phone. It's paid for."))
+            c.mainDialogue.SetText(c.displayName, LincolnTexts.BoxDelivered.Get())
                 .SetStartAction(() => HandOver(c, c.mainDialogue))
                 .SetEndAction(LeaveAfterHandOver);
-            c.allDoneDialogue = new Dialogue().SetText(c.displayName, Text.Pick("回头见。", "See you."))
+            c.allDoneDialogue = new Dialogue().SetText(c.displayName, LincolnTexts.BoxBye.Get())
                 .SetEndAction(LeaveAfterHandOver);
             c.CompleteClientCreation(false);
             return c;
         }
 
-        // The game's phone dialogue has 3 choice bubbles; for the catalog more are copied from the last one when the
+        // The game's phone dialogue has 3 choice bubbles; for the paged menus (PhoneMenus) more are copied from the last one when the
         // call starts. A bubble selects the choice of its own index (DialogChoiceBubble.index), and Unity points the
         // copy's click listener at the copy. PhoneChoices measures the available game area,
         // wraps labels and paginates for the selected native bubble scale. Other phone calls
         // regain the game's original three positions and heights.
         internal const int ChoiceBubbles = 8;
-        private sealed class MenuView
-        {
-            internal Menu Menu, Root;
-            internal int Start, Count;
-        }
-        private static readonly Dictionary<Dialogue, MenuView> menuPages = new Dictionary<Dialogue, MenuView>();
 
         internal static int EnsureChoiceBubbles()
         {
@@ -607,143 +473,12 @@ namespace GunsmithExpansion
 
         internal static bool IsMenuPage(Dialogue page)
         {
-            return page != null && menuPages.ContainsKey(page);
+            return PhoneMenus.IsPage(page);
         }
 
         internal static void PrepareChoicePage(Dialogue page)
         {
-            MenuView view;
-            if (page == null || !menuPages.TryGetValue(page, out view)) return;
-            int count = PhoneChoices.PageCapacity(MenuLabels(view.Menu, view.Start));
-            if (count == view.Count) return;
-            foreach (var choice in page.choices)
-                if (choice.Item1 != null) choice.Item1.Destroy();
-            page.choices.Clear();
-            ShowMenu(page, view.Menu, view.Root, view.Start);
-        }
-
-        private static string ItemChoiceLabel(string id)
-        {
-            Pack pack = FindPack(id);
-            string itemName;
-            if (pack != null) itemName = PackName(pack);
-            else
-            {
-                GameItem blueprint = DirectoryMaster.Item(id, false);
-                itemName = blueprint != null ? blueprint.name : id;
-                if (blueprint != null) blueprint.Destroy();
-            }
-            return string.Format(Text.Pick("{0}，{1} 信用点。", "{0}, {1} credits."), itemName, Price(id));
-        }
-
-        private static List<string> MenuLabels(Menu menu, int start)
-        {
-            var labels = new List<string>();
-            int count = menu.Children.Count > 0 ? menu.Children.Count : menu.Items.Count;
-            for (int i = start; i < count && i < start + ChoiceBubbles - 2; i++)
-                labels.Add(menu.Children.Count > 0 ? menu.Children[i].Label + Text.Pick("。", ".") : ItemChoiceLabel(menu.Items[i]));
-            return labels;
-        }
-
-        // The call: a greeting with the week's remaining orders, then the catalog's groups. A group of groups offers one
-        // choice for each and "that's all"; a group of items offers a page of them (as many as there are choice
-        // bubbles less two), then "what else" (the next page; after the last, back to the first groups) and "that's
-        // all".
-        internal static Dialogue Call(StorePhoneClient client)
-        {
-            EnsureChoiceBubbles();
-            menuPages.Clear();
-            string name = Name();
-            var root = new Dialogue();
-            int left = WeeklyLimit - OrderedThisWeek();
-            root.SetText(name, left > 0
-                ? string.Format(Text.Pick("要订什么？先付全款，两天后送到。材料不限件数，别的货这周还能订 {0} 件。",
-                    "What do you need? You pay now and I bring it in two days. Materials as many as you like; {0} more of anything else this week."), left)
-                : Text.Pick("材料以外的货这周已经订了 3 件，下周再订；材料不限件数。先付全款，两天后送到。",
-                    "You've had three things other than materials this week, the rest next week. Materials as many as you like: pay now, they come in two days."));
-            Menu catalog = BuildCatalog(GunSupply.PermitTop());
-            ShowMenu(root, catalog, catalog, 0);
-            return root;
-        }
-
-        private static void ShowMenu(Dialogue page, Menu menu, Menu root, int start)
-        {
-            string name = Name();
-            EnsureChoiceBubbles();
-            int perPage = PhoneChoices.PageCapacity(MenuLabels(menu, start));
-            menuPages[page] = new MenuView { Menu = menu, Root = root, Start = start, Count = perPage };
-            if (menu.Children.Count > 0)
-            {
-                for (int i = start; i < menu.Children.Count && i < start + perPage; i++)
-                {
-                    Menu c = menu.Children[i];
-                    Dialogue open = new Dialogue().SetText("PLAYER", c.Label + Text.Pick("。", "."));
-                    page.AddChoice(DirectoryMaster.Item("$", true), "", "", open, () =>
-                    {
-                        Dialogue reply = open.NextDialogue().SetText(name, c.Children.Count > 0 ? Text.Pick("要哪一类？", "Which kind?") : Text.Pick("有这些。", "I've got these."));
-                        ShowMenu(reply, c, root, 0);
-                    });
-                }
-                if (menu.Children.Count > perPage)
-                    AddMore(page, menu, root, start, perPage, menu.Children.Count);
-                AddBye(page);
-                return;
-            }
-            List<string> catalog = menu.Items;
-            for (int i = start; i < catalog.Count && i < start + perPage; i++)
-            {
-                string id = catalog[i];
-                Pack pack = FindPack(id);
-                int price = Price(id);
-                Dialogue pick = new Dialogue().SetText("PLAYER", ItemChoiceLabel(id));
-                page.AddChoice(DirectoryMaster.Item("$", true), "", "", pick, () =>
-                {
-                    bool placed = PlaceOrder(id);
-                    pick.NextDialogue().SetText(name, placed
-                        ? Text.Pick("好，两天后送到。", "Fine, it'll be there in two days.")
-                        : Text.Pick("钱不够，或者这周订满了。", "Not enough money, or you've ordered enough this week."))
-                        .SetEndAction(EndCall);
-                }, () => pack != null ? CanAffordPack(price) : CanAfford(price));
-            }
-            AddMore(page, menu, root, start, perPage, catalog.Count);
-            AddBye(page);
-        }
-
-        private static void AddMore(Dialogue page, Menu menu, Menu root, int start, int perPage, int count)
-        {
-            string name = Name();
-            int next = start + perPage;
-            Dialogue more = new Dialogue().SetText("PLAYER", Text.Pick("还有别的吗？", "What else have you got?"));
-            page.AddChoice(DirectoryMaster.Item("$", true), "", "", more, () =>
-            {
-                if (next < count)
-                {
-                    // Page length can change with resolution, scale and label wrapping.
-                    Dialogue nextPage = more.NextDialogue().SetText(name, Text.Pick("有这些。", "I've got these."));
-                    ShowMenu(nextPage, menu, root, next);
-                }
-                else
-                {
-                    Dialogue groups = more.NextDialogue().SetText(name, Text.Pick("这一类就这些。别的呢？", "That's all of that kind. Anything else?"));
-                    ShowMenu(groups, root, root, 0);
-                }
-            });
-        }
-
-        private static void AddBye(Dialogue page)
-        {
-            string name = Name();
-            Dialogue bye = new Dialogue().SetText("PLAYER", Text.Pick("先这样。", "That's all."));
-            page.AddChoice(DirectoryMaster.Item("$", true), "", "", bye, () =>
-            {
-                bye.NextDialogue().SetText(name, Text.Pick("那回头再说。", "Talk later, then.")).SetEndAction(EndCall);
-            });
-        }
-
-        private static void EndCall()
-        {
-            if (PhoneUIManager.Instance != null)
-                PhoneUIManager.Instance.OnPhoneDialogEnd(true);
+            PhoneMenus.Prepare(page);
         }
     }
 

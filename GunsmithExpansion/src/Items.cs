@@ -53,6 +53,7 @@ namespace GunsmithExpansion
             Cabinets.Register(directory);
             DeliveryBoxes.Register(directory);
             ChipBox.Register(directory);
+            LincolnItems.Register(directory);
             CorpLink.Apply();
             Manual.Register(directory);
         }

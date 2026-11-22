@@ -229,7 +229,11 @@ namespace GunsmithExpansion
                     break;
                 }
                 default:
-                    topLeft = new Vector2Int(gun.Pistol ? x - box.X0 : x - midX, y - 1 - (box.AttachRow >= 0 ? box.AttachRow : box.Y0));
+                    // An under-rail picture with the columns of its mount (FeetX0 and FeetX1, data/under-anchors.tsv) has the middle of
+                    // them on the point, on a pistol their first column (T-035's assembly, final-strategy 347: a laser's mount block
+                    // and a bipod's clamp stood behind the rail they hang from); the others as before.
+                    topLeft = new Vector2Int(gun.Pistol ? x - (box.FeetX0 >= 0 ? box.FeetX0 : box.X0) : x - (box.FeetX0 >= 0 ? (box.FeetX0 + box.FeetX1 + 1) / 2 : midX),
+                        y - 1 - (box.AttachRow >= 0 ? box.AttachRow : box.Y0));
                     break;
             }
             return true;

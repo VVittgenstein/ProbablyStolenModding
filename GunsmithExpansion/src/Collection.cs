@@ -9,8 +9,8 @@ namespace GunsmithExpansion
     // (GunsmithSign; item 17). Until 0.6.2 a quarter of the upper level gun buyers' custom orders were, and the game sends upper level gun buyers
     // only while the third firearm permit is in the display case (ShowcaseHelper.GUN_BUYERS: ll_gun_buyer with permit_gun_1,
     // merc_gun_buyer with permit_gun_2, ul_gun_buyer with permit_gun_3), so they came from the third permit on. A
-    // collector wants an old or antique gun, a revolver
-    // (the engraved one among them) or a match gun, in excellent condition or new, with a good look, and legal: the
+    // collector wants an old or antique gun, a revolver or a match gun, in excellent condition or new, with a good look, and
+    // legal (until T-013 the revolver's line asked for an engraved one; the only one, W132, was taken out: final-strategy 341 ②): the
     // order's requirements become the kind of gun, legal, the condition and a style that 60% of the kind's guns reach;
     // the game's bonus requirements on other stats stay. The collector pays for the gun the way the game's best orders
     // do (GunOrderData.GetTotalReward: the market price plus GetBestPremium, 50% of it), plus the bonus rewards met:
@@ -46,8 +46,8 @@ namespace GunsmithExpansion
                 Zh = "我收藏老枪。想找一把成色极好的老式枪，样子体面，来路干净，别是违禁品。",
                 En = "I collect old guns. I want an antique in excellent condition, handsome, with clean papers. No contraband." },
             new Theme { Classes = new[] { "左轮（含左轮卡宾）" },
-                Zh = "我在找一把好看的左轮，有雕花更好。成色要极好，还得合法。",
-                En = "I'm looking for a handsome revolver, engraved if you have one. Excellent condition, and it has to be legal." },
+                Zh = "我在找一把好看的左轮。成色要极好，还得合法。",
+                En = "I'm looking for a handsome revolver. Excellent condition, and it has to be legal." },
             new Theme { Models = MatchGuns,
                 Zh = "我收藏比赛用枪。成色要极好，外观要讲究，还得合法。",
                 En = "I collect match guns. Excellent condition, a fine finish, and legal." },

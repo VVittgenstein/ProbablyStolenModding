@@ -302,6 +302,8 @@ namespace GunsmithExpansion
             PortraitKey(Portrait);
             foreach (NewCustomers.Kind kind in NewCustomers.Kinds)
                 PortraitKey(kind.Portrait);
+            PortraitKey(Lincoln.DealerPortrait);
+            PortraitKey(Lincoln.DaughterPortrait);
         }
 
         // A portrait of this mod (Textures/Items/<name>.png) put into the game's SpriteDict: its key, or null when the

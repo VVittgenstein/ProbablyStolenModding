@@ -551,6 +551,33 @@ namespace GunsmithExpansion
                 + " returned, " + reservation.Faction + " reputation -" + ReputationLoss);
         }
 
+        // The guns taken out of the mod (SaveRecord.RemoveTakenOut; final-strategy 341 ③): their reservations are called off without the
+        // reputation loss of SettleFailure; the deposits go back to the customers. Returns how many.
+        internal static int CancelGuns(HashSet<string> guns, out int deposits)
+        {
+            deposits = 0;
+            List<Reservation> list = All(), keep = new List<Reservation>();
+            int n = 0;
+            foreach (Reservation r in list)
+            {
+                if (r.Gun == null || !guns.Contains(r.Gun))
+                {
+                    keep.Add(r);
+                    continue;
+                }
+                n++;
+                deposits += Math.Max(0, r.Deposit);
+                assigned.Remove(r.Id);
+                GunsmithMod.Log("reservation " + r.Id + " for " + r.Gun + " called off: the gun is no longer in the mod");
+            }
+            if (n == 0)
+                return 0;
+            Save(keep);
+            if (deposits > 0 && PlayerStore.Instance != null)
+                PlayerStore.Instance.ModCash(-deposits, true);
+            return n;
+        }
+
         internal static void OnOrderAccepted(GunOrderData order)
         {
             Reservation r = PickupOf(order);
@@ -889,6 +916,15 @@ namespace GunsmithExpansion
     {
         private static void Prefix(GunOrderData __instance)
         {
+            // first, while the reservation of a pickup is still there (Reservations.OnOrderAccepted removes it)
+            try
+            {
+                Lincoln.OnOrderAccepted(__instance);
+            }
+            catch (Exception e)
+            {
+                GunsmithMod.Warn("Lincoln favor from an order: " + e.Message);
+            }
             Workshop.OnOrderAccepted(__instance);
             Factions.OnOrderAccepted(__instance);
             Contracts.OnOrderAccepted(__instance);

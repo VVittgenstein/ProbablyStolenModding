@@ -32,6 +32,11 @@ namespace GunsmithExpansion
         internal const string ParcelId = "gse_parcel_chip";
         internal const string CartonId = "gse_box_gun";
         internal const string PackTag = "GSE_PHONE_PACK_ID";
+        // T-013: the retired gunsmith's blind boxes are this carton with their own name (final-strategy 340 ⑤, 348), kept by this tag
+        // (BlindBoxes.Label); a box from Lincoln Arms (its phone and its packs) says so instead of the retired gunsmith (FromTag).
+        internal const string BlindTag = "GSE_BLIND_BOX";
+        internal const string FromTag = "GSE_BOX_FROM";
+        internal const string FromLincoln = "lincoln";
         private const int ParcelWidth = 6;
         private const int ParcelHeight = 4;
         internal const int CartonWidth = 17;
@@ -93,6 +98,7 @@ namespace GunsmithExpansion
             box.onLoaded = (Action<GameItem>)Delegate.Combine(box.onLoaded, new Action<GameItem>(b =>
             {
                 RestorePackLabel(b);
+                RestoreBoxLabel(b);
                 if (DialogUIManager.Instance != null && DialogUIManager.Instance.isActiveAndEnabled)
                     CheckLater(b, inside);
             }));
@@ -133,18 +139,31 @@ namespace GunsmithExpansion
 
         private static string BoxFor(string id)
         {
-            return id.StartsWith("printer_chip", StringComparison.Ordinal) || id.StartsWith("gse_chip_", StringComparison.Ordinal) ? ParcelId : CartonId;
+            return id.StartsWith("printer_chip", StringComparison.Ordinal) || id.StartsWith("gse_chip_", StringComparison.Ordinal)
+                || id.StartsWith(Production.BlankId, StringComparison.Ordinal) ? ParcelId : CartonId;
         }
 
         // Fill the entire paid material pack before exposing its carton in the store. Failure leaves the saved order
         // intact; no partial carton is handed over and another order cannot share the carton.
-        internal static bool HandPack(Phone.Pack pack, ref string elsewhere)
+        internal static bool HandPack(Phone.Pack pack, ref string elsewhere, string from = null)
         {
-            if (pack == null || !Registered(CartonId))
-                return false;
-            GameItem box = DirectoryMaster.Item(CartonId, true);
+            GameItem box = FilledPack(pack, from);
             if (box == null)
                 return false;
+            if (Place(box, ref elsewhere))
+                return true;
+            box.Destroy();
+            return false;
+        }
+
+        // A carton holding a whole material pack, labelled, not placed anywhere; null when it cannot be filled.
+        internal static GameItem FilledPack(Phone.Pack pack, string from = FromLincoln)
+        {
+            if (pack == null || !Registered(CartonId))
+                return null;
+            GameItem box = DirectoryMaster.Item(CartonId, true);
+            if (box == null)
+                return null;
             foreach (string id in pack.Items)
             {
                 GameItem item = Phone.CreateOrderedItem(id);
@@ -154,15 +173,100 @@ namespace GunsmithExpansion
                     item.Destroy();
                 box.Destroy();
                 GunsmithMod.Warn("material pack could not be filled: " + pack.Id + ", item " + id);
-                return false;
+                return null;
             }
             box.EnableTag(PackTag, false);
             box.ModifyTag(PackTag, tag => tag.SetString(pack.Id), false);
+            MarkFrom(box, from);
             RestorePackLabel(box);
-            if (Place(box, ref elsewhere))
-                return true;
-            box.Destroy();
-            return false;
+            return box;
+        }
+
+        // A carton with the given items, not placed anywhere (the retired gunsmith's blind boxes, BlindBoxes). The items that do not
+        // fit are destroyed and logged; null when none went in.
+        internal static GameItem FilledBox(List<GameItem> items, string blindKind)
+        {
+            if (items == null || items.Count == 0 || !Registered(CartonId))
+                return null;
+            GameItem box = DirectoryMaster.Item(CartonId, true);
+            if (box == null)
+                return null;
+            int inside = 0;
+            foreach (GameItem item in items)
+            {
+                if (item == null)
+                    continue;
+                if (Put(box, item))
+                    inside++;
+                else
+                {
+                    GunsmithMod.Warn(item.identifier + " does not fit a blind box");
+                    item.Destroy();
+                }
+            }
+            if (inside == 0)
+            {
+                box.Destroy();
+                return null;
+            }
+            box.EnableTag(BlindTag, false);
+            box.ModifyTag(BlindTag, tag => tag.SetString(blindKind ?? ""), false);
+            RestoreBoxLabel(box);
+            return box;
+        }
+
+        // Any item by the same rule (Lincoln Arms' business card, LincolnVisits; a blind box, BlindBoxes).
+        internal static bool PlaceItem(GameItem item, ref string elsewhere)
+        {
+            return item != null && Place(item, ref elsewhere);
+        }
+
+        internal static void SetContentsOwned(GameItem box, bool owned)
+        {
+            GameInventory inside;
+            if (box == null || !insides.TryGetValue(box, out inside))
+                return;
+            foreach (GameItem item in new List<GameItem>(inside.childItems))
+            {
+                if (item != null)
+                    GeneralHelper.SetItemOwned(item, owned);
+            }
+        }
+
+        internal static long ContentsValue(GameItem box)
+        {
+            GameInventory inside;
+            if (box == null || !insides.TryGetValue(box, out inside))
+                return 0;
+            long value = 0;
+            foreach (GameItem item in inside.childItems)
+            {
+                if (item != null)
+                    value += item.GetNegociatedValue();
+            }
+            return value;
+        }
+
+        private static void MarkFrom(GameItem box, string from)
+        {
+            if (box == null || string.IsNullOrEmpty(from))
+                return;
+            box.EnableTag(FromTag, false);
+            box.ModifyTag(FromTag, tag => tag.SetString(from), false);
+        }
+
+        private static bool FromLincolnArms(GameItem box)
+        {
+            return box != null && box.IsTag(FromTag) && box.GetTagReadonly(FromTag).GetString() == FromLincoln;
+        }
+
+        private static string GoodsText(GameItem box)
+        {
+            return FromLincolnArms(box)
+                ? Text.Pick("林肯军火行的货。打开后把东西取走，取空后包装会消失，不能往里放东西。",
+                    "Goods from Lincoln Arms. Open it and take them out; it is gone once empty, and nothing can be put in.")
+                : Text.Pick("退休枪匠送来的货。打开后把东西取走，取空后包装会消失，不能往里放东西。",
+                    "Goods from the retired gunsmith. Open it and take them out; it is gone once empty, and nothing can be put in.");
         }
 
         internal static void RestorePackLabel(GameItem box)
@@ -173,16 +277,34 @@ namespace GunsmithExpansion
             if (pack == null)
                 return;
             box.name = Phone.PackTitle(pack);
-            box.shortDescription = Phone.PackName(pack) + "\n" + Text.Pick(
-                "退休枪匠送来的货。打开后把东西取走，取空后包装会消失，不能往里放东西。",
-                "Goods from the retired gunsmith. Open it and take them out; it is gone once empty, and nothing can be put in.");
+            box.shortDescription = Phone.PackName(pack) + "\n" + GoodsText(box);
+            if (box.contentWindow != null)
+                box.contentWindow.SetTitle(box.name);
+        }
+
+        // A blind box's name and text (BlindBoxes.Label), or a parcel from Lincoln Arms.
+        internal static void RestoreBoxLabel(GameItem box)
+        {
+            if (box == null)
+                return;
+            if (box.IsTag(BlindTag))
+            {
+                string name, text;
+                BlindBoxes.Label(box.GetTagReadonly(BlindTag).GetString(), out name, out text);
+                box.name = name;
+                box.shortDescription = text;
+            }
+            else if (!box.IsTag(PackTag) && box.IsID(ParcelId) && FromLincolnArms(box))
+                box.shortDescription = GoodsText(box);
+            else
+                return;
             if (box.contentWindow != null)
                 box.contentWindow.SetTitle(box.name);
         }
 
         // One ordered item into its box. open keeps the boxes of this delivery. false: no room in the store, the order stays.
         // elsewhere names the place when a new box or bare item went somewhere other than the front counter.
-        internal static bool Hand(GameItem item, Dictionary<string, GameItem> open, ref string elsewhere)
+        internal static bool Hand(GameItem item, Dictionary<string, GameItem> open, ref string elsewhere, string from = null)
         {
             string id = BoxFor(item.identifier);
             if (!Registered(id))
@@ -193,6 +315,8 @@ namespace GunsmithExpansion
             box = DirectoryMaster.Item(id, true);
             if (box == null)
                 return HandBare(item, ref elsewhere);
+            MarkFrom(box, from);
+            RestoreBoxLabel(box);
             if (!Place(box, ref elsewhere))
             {
                 box.Destroy();
@@ -309,20 +433,30 @@ namespace GunsmithExpansion
         // for the gun come off: the game has counted them in the purchase already (StoreReputation.OnItemTraded, before this
         // postfix), and from here the gun carries its own, which an inspection finds inside the carton
         // (ContrabandHelper.StartInspection) and a permit changes; left on the carton they would count the gun twice.
+        // A material pack bought at Lincoln Arms (LincolnGoods) holds several items: each takes its share of the price by its value.
         internal static void OnBought(GameItem box, int cost)
         {
             GameInventory inside;
             if (box == null || !box.IsID(CartonId) || !insides.TryGetValue(box, out inside))
                 return;
-            foreach (GameItem item in new List<GameItem>(inside.childItems))
+            var items = new List<GameItem>();
+            long total = 0;
+            foreach (GameItem item in inside.childItems)
             {
                 if (item == null || GeneralHelper.IsItemOwned(item))
                     continue;
+                items.Add(item);
+                total += Math.Max(0, item.GetNegociatedValue());
+            }
+            foreach (GameItem item in items)
+            {
+                int share = items.Count == 1 || total <= 0 ? cost / items.Count
+                    : (int)Math.Round((double)cost * Math.Max(0, item.GetNegociatedValue()) / total);
                 GeneralHelper.SetItemOwned(item, true);
                 item.RemoveFeatureRelatedToEvent();
                 item.RemoveFeatureTemporaryBuying();
-                GeneralHelper.TrackBuyPrice(item, cost);
-                GunsmithMod.Log(item.identifier + " bought in a carton for " + cost);
+                GeneralHelper.TrackBuyPrice(item, share);
+                GunsmithMod.Log(item.identifier + " bought in a carton for " + share + " of " + cost);
             }
             StolenHelper.RemoveStolenStatus(box);
             ContrabandHelper.RemoveContrabandStatus(box);

@@ -541,10 +541,8 @@ namespace GunsmithExpansion
         private static void Postfix(StoreClient __result)
         {
             ModulePity.Attach(__result);
-            Production.AddBlankChips(__result);
-            Reloader.StockRetiredGunsmith(__result);
             RepairGoods.Stock(__result);
-            Cabinets.StockLarge(__result);
+            Cabinets.StockRetired(__result);
             Phone.AttachIntro(__result);
         }
     }

@@ -14,7 +14,7 @@ namespace GunsmithExpansion
     // The dies ask for the reloader's machine tag, so the game's printers do not run them, and the reloader starts
     // nothing but a die. Families: .22 and 10 mm (the game's rounds), .45, 12 gauge, intermediate and full-power rifle
     // rounds; the design draft lists heavy rounds and 40 mm grenades as ordered or black market only, so they have no
-    // die. The retired gunsmith sells the reloader, a die and propellant from the second firearm permit on; the game's
+    // die. Lincoln Arms sells the reloader, the dies and propellant (T-013; until then the retired gunsmith from the second firearm permit on); the game's
     // lower level chemist sells propellant (the game has no propellant of its own; final-strategy 42 has it come from
     // chemistry). Values follow the game's (VVittgenstein 2026-11-02, current/005 quote 50): the reloader is worth the game's
     // printer (350), the machine it is built as; a die is worth 12 rounds of its ammunition, as the game's gun part chip
@@ -37,7 +37,6 @@ namespace GunsmithExpansion
         internal const int RoundsPerDieValue = 12;
         internal const int PropellantValue = 10;
         internal const int Work = 24;
-        internal const int GunsmithPropellant = 3;
         internal const int ChemistPercent = 50;
         private static readonly Random rng = new Random();
         private static readonly List<Die> registered = new List<Die>();
@@ -168,25 +167,6 @@ namespace GunsmithExpansion
         {
             for (int i = 0; i < count; i++)
                 Sellers.Offer(id);
-        }
-
-        // The retired gunsmith, from the second firearm permit on: the reloader, a die of a family the permit covers,
-        // and propellant.
-        internal static void StockRetiredGunsmith(StoreClient client)
-        {
-            int top = Ammo.PermitTop();
-            List<Die> dies = registered.FindAll(d => d.Contraband <= top);
-            if (client == null || top < 2 || dies.Count == 0)
-                return;
-            Die pick = dies[rng.Next(dies.Count)];
-            Sellers.AfterStock(client, () =>
-            {
-                if (PlayerStore.Instance == null)
-                    return;
-                Put(Id, 1);
-                Put(pick.Id, 1);
-                Put(PropellantId, GunsmithPropellant);
-            });
         }
 
         // The game's lower level chemist: propellant.

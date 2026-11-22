@@ -4,9 +4,11 @@ using HarmonyLib;
 
 namespace GunsmithExpansion
 {
-    // Chinese texts when the game runs in Chinese, Russian when it runs in Russian (src/TextRu.cs, looked up by the
-    // English text; an English text without a Russian one stays English), English otherwise. The Russian texts were
-    // added in 0.5.13 (VVittgenstein 2026-11-03, current/005 quotes 60 and 61), as in the other mods of this project.
+    // Chinese texts when the game runs in Chinese; Russian, French or Japanese when it runs in one of these (src/TextRu.cs,
+    // src/TextFr.cs, src/TextJa.cs, looked up by the English text; an English text without a translation stays English);
+    // English otherwise. The Russian texts were added in 0.5.13 (VVittgenstein 2026-11-03, current/005 quotes 60 and 61),
+    // as in the other mods of this project; the French and Japanese ones are the translations of T-039 and T-015
+    // (2026-11-22).
     internal static class Text
     {
         private static string LanguageCode()
@@ -15,27 +17,84 @@ namespace GunsmithExpansion
             return locale != null ? locale.Identifier.Code : null;
         }
 
+        private static bool Is(string code, string language)
+        {
+            return code != null && code.StartsWith(language, StringComparison.OrdinalIgnoreCase);
+        }
+
         internal static bool Chinese()
         {
-            string code = LanguageCode();
-            return code != null && code.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+            return Is(LanguageCode(), "zh");
         }
 
         internal static bool Russian()
         {
+            return Is(LanguageCode(), "ru");
+        }
+
+        internal static bool French()
+        {
+            return Is(LanguageCode(), "fr");
+        }
+
+        internal static bool Japanese()
+        {
+            return Is(LanguageCode(), "ja");
+        }
+
+        // Chinese or Japanese: no space between sentences, and the game's tooltip counts every character as wide (Lines).
+        internal static bool Cjk()
+        {
             string code = LanguageCode();
-            return code != null && code.StartsWith("ru", StringComparison.OrdinalIgnoreCase);
+            return Is(code, "zh") || Is(code, "ja");
+        }
+
+        // The full stop after a phone choice made of a name (src/LincolnPhone.cs): "。" in Chinese and Japanese. A text without a Latin
+        // letter is not in the translation tables (tools/gen_texts.py), so Pick("。", ".") gave "." in Japanese.
+        internal static string FullStop()
+        {
+            return Cjk() ? "。" : ".";
+        }
+
+        // The code of the book language (src/Manual.cs): zh, ru, fr, ja, else en.
+        internal static string BookLanguage()
+        {
+            string code = LanguageCode();
+            foreach (string language in new[] { "zh", "ru", "fr", "ja" })
+            {
+                if (Is(code, language))
+                    return language;
+            }
+            return "en";
         }
 
         internal static string Pick(string zh, string en)
         {
             string code = LanguageCode();
-            if (code != null && code.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+            if (Is(code, "zh"))
                 return zh;
-            string ru;
-            if (en != null && code != null && code.StartsWith("ru", StringComparison.OrdinalIgnoreCase) && TextRu.Texts.TryGetValue(en, out ru))
-                return ru;
+            if (en == null || code == null)
+                return en;
+            Dictionary<string, string> table = Is(code, "ru") ? TextRu.Texts : Is(code, "fr") ? TextFr.Texts : Is(code, "ja") ? TextJa.Texts : null;
+            string text;
+            if (table != null && table.TryGetValue(en, out text))
+                return text;
+            // Japanese: a text without a Latin letter is punctuation or a format ("：" and ": ", "{0}（{1}）" and "{0} ({1})"), which the
+            // tables do not hold (tools/gen_texts.py takes texts with a Latin letter); the Chinese one, with 、 for ，, is written the
+            // Japanese way (T-013, the report of the Japanese translation of its texts).
+            if (zh != null && Is(code, "ja") && !HasLatin(en))
+                return zh.Replace('，', '、');
             return en;
+        }
+
+        private static bool HasLatin(string s)
+        {
+            foreach (char c in s)
+            {
+                if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+                    return true;
+            }
+            return false;
         }
 
         private static readonly Dictionary<string, string> ClassNamesEn = new Dictionary<string, string>
@@ -244,11 +303,12 @@ namespace GunsmithExpansion
     // ko, and then the width is 40 x 0.66), 40 in the other languages. Here a line is cut before it reaches Width, every
     // character counting 1.5 in Chinese (at most 25 on a line) and 1 otherwise; a continued line keeps the indent plus
     // two spaces. Closing punctuation and the unit 毫升 stay with what comes before them, opening punctuation with what
-    // comes after.
+    // comes after. Japanese counts as Chinese (the game's width scale is the same for ja); its small kana, the long
+    // vowel mark and the middle dot stay with what comes before them (2026-11-22, T-015).
     internal static class Lines
     {
         internal const float Width = 38f;
-        private const string Closing = "，。；：、）！？”』」%,.;:!?)毫升";
+        private const string Closing = "，。；：、）！？”』」%,.;:!?)毫升ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶー・";
         private const string Opening = "（“『「(";
 
         internal static bool IsWide(char c)
@@ -260,7 +320,7 @@ namespace GunsmithExpansion
 
         internal static float Measure(string s)
         {
-            if (Text.Chinese())
+            if (Text.Cjk())
                 return s.Length * 1.5f;
             float w = 0f;
             foreach (char c in s)

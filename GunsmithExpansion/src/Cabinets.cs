@@ -33,10 +33,8 @@ namespace GunsmithExpansion
     //     kind, the percentage a setting of the mod (VVittgenstein 2026-11-05 13:59, current/008 quote 4 point 27; DefineSettings):
     //     the game's table has its tools at 2% in all, about 0.33% each (value 25 to 100), and its tier two modules at 0.5%
     //     (value 70 to 100), and a cabinet found is worth 50 or 100. From 0.6.0 to 0.6.2 it was 2%.
-    //   - Ordered by phone from the retired gunsmith (Phone). He also brings a long gun cabinet on his first visit from day LargeVisitDay
-    //     on, which is day 18 by his visits on days 4, 11, 18, 25 (StoreClientManager.HandleContentUnlockClient); VVittgenstein asked for a day
-    //     (current/008 quote 22 point 71), day 14 is the Agent's: from then on the third batch fills up with random customers and private
-    //     security contractors come for guns on display.
+    //   - Sold by Lincoln Arms (T-013; until then ordered by phone from the retired gunsmith, who also brought a long gun cabinet once
+    //     from day 14). The retired gunsmith brings one on about every other visit (StockRetired; final-strategy 344, 357).
     // Agent's decisions: which guns are pistols (this mod's pistols and its revolvers of at most 6 cells' width, which leaves out the
     // revolver carbine, the game's pistols, revolver and stun gun; until 0.7 the width was at most 5), the slot sizes.
     internal static class Cabinets
@@ -60,9 +58,8 @@ namespace GunsmithExpansion
         internal const int SmallSlotValue = 25;
         internal const int LargeEmptyValue = 100;
         internal const int LargeSlotValue = 35;
-        internal const int LargeVisitDay = 14;
+        internal const int RetiredPercent = 50;
         private const int MaxRevolverWidth = 6;
-        private const string LargeBroughtKey = "cabinet_large_brought";
         private const string StunGunId = "stun_gun";
         private static readonly System.Random rng = new System.Random();
         private static ConfigEntry<float> dumpPercent;
@@ -426,18 +423,24 @@ namespace GunsmithExpansion
             return box;
         }
 
-        // The retired gunsmith's visit that brings a long gun cabinet, once in a game. It goes on the counter before his other goods; if the
-        // counter still has no room he brings it next time.
-        internal static void StockLarge(StoreClient client)
+        // The retired gunsmith's visit (final-strategy 344, 357): about every other one brings a cabinet, a pistol or a long gun cabinet
+        // alike, with 1 or 2 slots unlocked alike (the two halves are the Agent's arrangement). It goes on the counter before his other goods.
+        internal static void StockRetired(StoreClient client)
         {
-            if (client == null || StoreStation.GetDayCounter() < LargeVisitDay || !Registered(LargeId) || ModHelper.GetModDataBool(GunsmithMod.ModId, LargeBroughtKey, false))
+            if (client == null || !Registered(SmallId) || !Registered(LargeId) || rng.Next(100) >= RetiredPercent)
                 return;
+            bool small = rng.Next(2) == 0;
+            int unlocked = 1 + rng.Next(2);
             Sellers.BeforeStock(client, () =>
             {
-                if (PlayerStore.Instance == null || !Sellers.Offer(LargeId))
+                if (PlayerStore.Instance == null)
                     return;
-                ModHelper.SetModDataBool(GunsmithMod.ModId, LargeBroughtKey, true);
-                GunsmithMod.Log("the retired gunsmith brings a long gun cabinet");
+                GameItem box = DirectoryMaster.Item(small ? SmallId : LargeId, true);
+                if (box == null)
+                    return;
+                SetUnlocked(box, unlocked);
+                if (Sellers.Offer(box))
+                    GunsmithMod.Log("the retired gunsmith brings a " + (small ? "pistol" : "long gun") + " cabinet with " + unlocked + " slots unlocked");
             });
         }
 

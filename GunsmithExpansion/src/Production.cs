@@ -239,18 +239,6 @@ namespace GunsmithExpansion
             GunFrameHelper.InitFrame(frame, d.Id, d.Contraband);
             return frame;
         }
-
-        // The retired gunsmith's fixed stock, put out before the game's wares so that a full counter does not leave it off.
-        internal static void AddBlankChips(StoreClient client)
-        {
-            Sellers.BeforeStock(client, () =>
-            {
-                if (PlayerStore.Instance == null)
-                    return;
-                Sellers.Offer(BlankIdOf(1));
-                Sellers.Offer(BlankIdOf(Math.Max(1, GunSupply.PermitTop())));
-            });
-        }
     }
 
     // The printer's output tray. The game builds it 9 x 5 cells (MachinePrinter.CreateMachineInventoryWindow); since the

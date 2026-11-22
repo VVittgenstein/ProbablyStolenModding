@@ -7,9 +7,9 @@ namespace GunsmithExpansion
 {
     // The in-game manuals (0.7 list item 38; current/T-007; design in experiments/2026-11-06-manual/design.md). Two items, the Gunsmithing Manual
     // and the Firearms Catalog, open books that the game reads from Books\*.json of the enabled mods at start-up (PaperBookRegistry.LoadMod), one
-    // book per language (design section 2.2): gse_manual_zh, gse_manual_en and gse_manual_ru, gse_catalog_zh, _en and _ru, written by
-    // tools/build_manual.py. Activated, an item opens the book of the game's language: Chinese, Russian, English for every other language; a book
-    // not loaded falls back to the English one, then to the Chinese one.
+    // book per language (design section 2.2): gse_manual_zh, _en, _ru, _fr and _ja, gse_catalog_zh, _en, _ru, _fr and _ja (French and Japanese
+    // from T-013), written by tools/build_manual.py. Activated, an item opens the book of the game's language (Text.BookLanguage: Chinese, Russian,
+    // French, Japanese, English for every other language); a book not loaded falls back to the English one, then to the Chinese one.
     // The items are built as the game's three spiral notebook guides (the plasma cartridge, Ribwich and cybernetic hand appraisal guides,
     // MiscItemDirectory.FuelGuide, RibwichGuide and HandGuide, read 2026-11-07 in game 1.0.0.12), whose picture the manuals' own pictures of the
     // twentieth batch recolour (tools/build_redraw_batch20.py): the document type and tag, "important" as all eight of the game's manuals, the guide
@@ -148,7 +148,7 @@ namespace GunsmithExpansion
             List<string> loaded = ModHelper.GetPaperBookIds(GunsmithMod.ModId);
             if (loaded == null)
                 return null;
-            string language = Text.Chinese() ? "zh" : Text.Russian() ? "ru" : "en";
+            string language = Text.BookLanguage();
             string difficulty = DifficultyOfSave();
             foreach (string code in new[] { language, "en", "zh" })
             {
@@ -382,7 +382,7 @@ namespace GunsmithExpansion
 
     // The retired gunsmith's visit. His stock goes out in the end action of his greeting; Sellers.BeforeStock puts an action at the front of it, so the
     // one added last goes out first. With a priority below the default this postfix runs after RetiredGunsmithPatch (Harmony runs a method's
-    // postfixes from the highest priority down), whose goods (the long gun cabinet, the repair goods, the blank chips) are put before the game's:
+    // postfixes from the highest priority down), whose goods (a gun cabinet, the repair goods) are put before the game's:
     // the books go out before all of them.
     [HarmonyPatch(typeof(StoreClientListSpec), nameof(StoreClientListSpec.CreateRetiredGunsmith))]
     [HarmonyPriority(Priority.Low)]

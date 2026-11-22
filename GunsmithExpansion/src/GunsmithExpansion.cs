@@ -29,6 +29,10 @@ namespace GunsmithExpansion
             ModHook.OnGameLoadedLate += GameGunLevels.OnGameLoaded;
             ModHook.OnGameLoadedLate -= Cabinets.OnGameLoaded;
             ModHook.OnGameLoadedLate += Cabinets.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= Lincoln.OnGameLoaded;
+            ModHook.OnGameLoadedLate += Lincoln.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= LincolnGoods.Forget;
+            ModHook.OnGameLoadedLate += LincolnGoods.Forget;
             ModHook.OnNetworkUpgradeUnlocked -= RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked += RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked -= ManualServiceHook.OnUpgradeUnlocked;
@@ -40,6 +44,9 @@ namespace GunsmithExpansion
             Cabinets.DefineSettings();
             AddOn2077.DefineSettings();
             Phone.Register();
+            LincolnPhone.Register();
+            LincolnVisits.Register();
+            LincolnShop.Register();
             Certificates.RegisterClients();
             GunsmithSign.RegisterClient();
             Reservations.Register();
@@ -58,10 +65,13 @@ namespace GunsmithExpansion
             ModHook.OnGameLoadedLate -= Phone.OnGameLoaded;
             ModHook.OnGameLoadedLate -= GameGunLevels.OnGameLoaded;
             ModHook.OnGameLoadedLate -= Cabinets.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= Lincoln.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= LincolnGoods.Forget;
             ModHook.OnNetworkUpgradeUnlocked -= RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked -= ManualServiceHook.OnUpgradeUnlocked;
             ModHook.OnNewGameStarted -= GunsmithStartSignHook.OnNewGameStarted;
             ModHook.OnNewGameStarted -= ManualStartHook.OnNewGameStarted;
+            LincolnShop.Unregister();
         }
 
         internal static void Log(string s)
