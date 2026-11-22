@@ -412,6 +412,50 @@ namespace Moneylending
         }
         internal static string SawyerWordSpread() { return T("伙计们上门讨债的事在下层区传开了。", "Word of the Crew's visit spread through the Lower Levels.", "Слух о визите Команды Сойера разошёлся по Нижним уровням."); }
 
+        // ---- Mr. Leung, after Sawyer's death ------------------------------------------------------------------------
+        // The Chinese is the text VVittgenstein adopted on 2026-11-09 ("采用修正后的整套中文稿", current/archive/T-012); the
+        // English and the Russian are translations of it. The player's two choices say what they say to Sawyer.
+
+        internal static string LeungName() { return T("梁先生", "Mr. Leung", "Господин Люн"); }
+
+        // count: the loans he can still be hired for, the one he comes for included (Collector.PendingCount).
+        internal static string LeungIntro(int count)
+        {
+            return count > 1
+                ? T("您好，敝姓梁。听说您有多笔款项，至今没有收回。", "Good day. My name is Leung. I understand there are several sums owed to you that you have yet to recover.", "Здравствуйте. Моя фамилия Люн. Я слышал, что вам до сих пор не вернули несколько долгов.")
+                : T("您好，敝姓梁。听说您有一笔款项，至今没有收回。", "Good day. My name is Leung. I understand there is a sum owed to you that you have yet to recover.", "Здравствуйте. Моя фамилия Люн. Я слышал, что вам до сих пор не вернули долг.");
+        }
+
+        // count: as for LeungIntro (Collector.PendingCount).
+        internal static string LeungAgain(int count)
+        {
+            return count > 1
+                ? T("您好。今天还有多笔逾期款项需要处理。", "Good day. There are still several overdue sums to deal with today.", "Здравствуйте. Сегодня нужно разобраться ещё с несколькими просроченными долгами.")
+                : T("您好。今天还有一笔逾期款项需要处理。", "Good day. There is still one overdue sum to deal with today.", "Здравствуйте. Сегодня нужно разобраться ещё с одним просроченным долгом.");
+        }
+
+        internal static string LeungOwes(string name, int owed)
+        {
+            return string.Format(CultureInfo.InvariantCulture, T("{0}还欠您{1}信用点。我已经记下了。", "{0} still owes you {1} Credits. I have made a note of it.", "Заёмщик {0} всё ещё должен вам {1} Кр. Я это записал."), name, owed);
+        }
+        internal static string LeungFee(int fee)
+        {
+            return string.Format(CultureInfo.InvariantCulture, T("我的费用是{0}信用点，先付。今晚给您答复。即使没能追回，费用也不退。", "My fee is {0} Credits, paid up front. You will have an answer tonight. Even if I cannot recover the money, the fee is not refunded.", "Мой гонорар составляет {0} Кр., оплата вперёд. Вечером дам вам ответ. Даже если долг вернуть не удастся, гонорар не возвращается."), fee);
+        }
+        internal static string LeungHire(int fee) { return string.Format(CultureInfo.InvariantCulture, T("给你{0}信用点。", "Here are {0} Credits.", "Вот {0} Кр."), fee); }
+        internal static string LeungDecline() { return T("算了，不追了。", "Let it go.", "Оставим это."); }
+        internal static string LeungHired() { return T("我会亲自登门。该动手时，我不会留情。今晚给您消息。", "I will call on them in person. When force is called for, I will not hold back. You will hear from me tonight.", "Я лично нанесу визит. Если дойдёт до силы, церемониться не стану. Вечером сообщу вам новости."); }
+        internal static string LeungDeclined() { return T("当然，由您决定。欠条请收好。", "Of course; the decision is yours. Do keep the I.O.U. safe.", "Разумеется, решать вам. Расписку сохраните."); }
+        internal static string LeungCollected(int amount, string name)
+        {
+            return string.Format(CultureInfo.InvariantCulture, T("梁先生从{1}那里追回了{0}信用点。", "Mr. Leung recovered {0} Credits from {1}.", "Господин Люн взыскал {0} Кр. с заёмщика {1}."), amount, name);
+        }
+        internal static string LeungFailed(string name)
+        {
+            return string.Format(CultureInfo.InvariantCulture, T("梁先生没能找到{0}。", "Mr. Leung could not find {0}.", "Господину Люну не удалось найти заёмщика {0}."), name);
+        }
+        internal static string LeungWordSpread() { return T("梁先生上门讨债的事在下层区传开了。", "Word of Mr. Leung's visit spread through the Lower Levels.", "Слух о визите господина Люна разошёлся по Нижним уровням."); }
+
         // ---- Loan Shark -----------------------------------------------------------------------------------------
 
         internal static string SharkRentDay() { return T("今天交房租，你的收银机看着有点空啊。", "Rent day, and the register looks a little light.", "День аренды, а касса что-то пустовата."); }
@@ -571,12 +615,17 @@ namespace Moneylending
                     return T("已还清", "Repaid", "Возвращено");
                 case LoanStatus.Arrested:
                     return T("借款人被捕", "Borrower arrested", "Заёмщик арестован");
+                // A commission keeps the name of the collector who was paid (Collector.IsLeung).
                 case LoanStatus.Collected:
-                    return T("索耶的伙计已要回", "Collected by Sawyer's Crew", "Взыскано Командой Сойера");
+                    return Collector.IsLeung(loan)
+                        ? T("梁先生已追回", "Recovered by Mr. Leung", "Взыскано господином Люном")
+                        : T("索耶的伙计已要回", "Collected by Sawyer's Crew", "Взыскано Командой Сойера");
                 case LoanStatus.Defaulted:
-                    return loan.sawyerHiredDay >= 0 && loan.sawyerHiredDay >= day
-                        ? T("未还，索耶的伙计在追", "Unpaid; Sawyer's Crew is on it", "Не возвращено; этим занимается Команда Сойера")
-                        : T("未还", "Unpaid", "Не возвращено");
+                    if (loan.sawyerHiredDay < 0 || loan.sawyerHiredDay < day)
+                        return T("未还", "Unpaid", "Не возвращено");
+                    return Collector.IsLeung(loan)
+                        ? T("未还，梁先生正在讨债", "Unpaid; Mr. Leung is collecting", "Не возвращено; долг взыскивает господин Люн")
+                        : T("未还，索耶的伙计在追", "Unpaid; Sawyer's Crew is on it", "Не возвращено; этим занимается Команда Сойера");
             }
             int left = loan.dueDay - day;
             if (left > 0)
@@ -598,13 +647,17 @@ namespace Moneylending
             return string.Format(CultureInfo.InvariantCulture, T("{0}：借入{1}，第{3}天要还{2}", "{0}: borrowed {1}, {2} due on day {3}", "{0}: взято {1}, вернуть {2} в день {3}"), lender, debt.principal, debt.Outstanding, debt.dueDay);
         }
 
+        // The fees paid to Mr. Leung are listed once he has introduced himself.
         internal static string LedgerTotalsLine(State s)
         {
-            return string.Format(CultureInfo.InvariantCulture,
+            string line = string.Format(CultureInfo.InvariantCulture,
                 T("借出共{0}，赚到利息{1}，损失{2}，追回{3}，付给索耶的伙计{4}",
                   "Lent {0} in total, interest earned {1}, lost {2}, recovered {3}, paid to Sawyer's Crew {4}",
                   "Всего выдано {0}, получено процентов {1}, потеряно {2}, взыскано {3}, заплачено Команде Сойера {4}"),
                 s.lent, s.interestEarned, s.lost, s.recovered, s.sawyerFees);
+            if (s.leungMet || s.leungFees > 0)
+                line += string.Format(CultureInfo.InvariantCulture, T("，付给梁先生{0}", ", paid to Mr. Leung {0}", ", заплачено господину Люну {0}"), s.leungFees);
+            return line;
         }
 
         internal static string SharkName() { return LocHelper.GetLocalizedClientName("name_loan_shark"); }

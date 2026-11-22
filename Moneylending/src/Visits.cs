@@ -3,7 +3,8 @@ using System.Collections.Generic;
 
 namespace Moneylending
 {
-    // Borrowers asking for a loan, borrowers coming back, and Sawyer offering to collect.
+    // Borrowers asking for a loan, borrowers coming back, and a collector offering to collect: Sawyer, or Mr. Leung after
+    // Sawyer's death (Collector).
     // Choices follow the game's own loan dialogues: a choice's label is the player's line, its effect runs in
     // the choice action, and the replies after it are ordinary lines (the label itself is never played, so it
     // carries no actions).
@@ -309,8 +310,12 @@ namespace Moneylending
 
         // ---- Sawyer ---------------------------------------------------------------------------------------------
 
+        // Also rebuilds a Sawyer visitor that a save kept in the waiting line (F5 Quick Save keeps the line by identifier);
+        // once Sawyer is dead, Mr. Leung comes in his place.
         internal static StoreClient CreateSawyer(int id)
         {
+            if (Game.SawyerDead)
+                return CreateLeung(id);
             Loan loan = Book.FindLoan(id);
             if (loan == null || loan.status != (int)LoanStatus.Defaulted || loan.sawyerHiredDay >= 0)
                 return Clients.Nobody(Clients.SawyerPrefix + Text.N(id));
@@ -323,7 +328,19 @@ namespace Moneylending
 
         private static Dialogue SawyerDialogue(StoreClient client, Loan loan)
         {
+            // Shot dead after this visitor joined today's line: he makes no offer, and Mr. Leung comes from the next day
+            // with a visit window of his own (also when today was the last day of Sawyer's window).
+            if (Game.SawyerDead)
+            {
+                if (Collector.Eligible(loan))
+                {
+                    Collector.Schedule(loan, Game.Day + 1);
+                    Book.Save();
+                }
+                return new Dialogue().SetText(client.displayName, "...").SetEndAction(Clients.Leave);
+            }
             loan.sawyerOffered = true;
+            loan.collector = Collector.Sawyer;
             Book.Save();
             string name = client.displayName;
             int fee = Lending.SawyerFee(loan);
@@ -333,18 +350,7 @@ namespace Moneylending
 
             Dialogue hire = new Dialogue().SetText("PLAYER", Text.SawyerHire(fee));
             hire.SetNextDialogue(new Dialogue().SetText(name, Text.SawyerHired()).SetEndAction(Clients.Leave));
-            offer.AddChoice(ChoiceItem(), "hire", "", hire, () =>
-            {
-                PlayerStore store = PlayerStore.Instance;
-                if (store.playerCash < fee || loan.sawyerHiredDay >= 0)
-                    return;
-                store.ModCash(-fee, true);
-                loan.sawyerHiredDay = Game.Day;
-                loan.sawyerFee = fee;
-                Book.S.sawyerFees += fee;
-                Book.Save();
-                MoneylendingMod.Log("Sawyer hired for loan #" + loan.id + ", fee " + fee);
-            }, () => Game.Cash >= fee);
+            offer.AddChoice(ChoiceItem(), "hire", "", hire, () => Hire(loan, fee, Collector.Sawyer), () => Game.Cash >= fee);
 
             Dialogue decline = new Dialogue().SetText("PLAYER", Text.SawyerDecline());
             decline.SetNextDialogue(new Dialogue().SetText(name, Text.SawyerDeclined()).SetEndAction(Clients.Leave));
@@ -352,9 +358,76 @@ namespace Moneylending
             return first;
         }
 
-        // Resolved on the night of the day the Crew was paid.
-        internal static void ResolveSawyer(Loan loan)
+        // ---- Mr. Leung, after Sawyer's death ------------------------------------------------------------------
+
+        internal static StoreClient CreateLeung(int id)
         {
+            Loan loan = Book.FindLoan(id);
+            if (loan == null || loan.status != (int)LoanStatus.Defaulted || loan.sawyerHiredDay >= 0)
+                return Clients.Nobody(Clients.LeungPrefix + Text.N(id));
+            string portrait = Collector.PortraitKey() ?? SpriteDict.GetRandomBMMaleSpriteName();
+            StoreClient client = Clients.Create(Clients.LeungPrefix + Text.N(id), Text.LeungName(), portrait, Profiles.BlackMarket, StoreClientFactionSetup.InitBlackMarket);
+            client.OnArrival = () => client.mainDialogue = LeungDialogue(client, loan);
+            client.mainDialogue.SetText(client.displayName, "...");
+            client.CompleteClientCreation(false);
+            return client;
+        }
+
+        // Built when he reaches the counter. He introduces himself at his first visit; later visits open with the loans
+        // still to be dealt with. Either opening says one or several by Collector.PendingCount. Then this loan, the fee,
+        // the choice.
+        private static Dialogue LeungDialogue(StoreClient client, Loan loan)
+        {
+            State s = Book.S;
+            int day = Game.Day;
+            bool introduced = s.leungMet;
+            int count = Math.Max(1, Collector.PendingCount(day));
+            loan.sawyerOffered = true;
+            loan.collector = Collector.Leung;
+            s.leungMet = true;
+            Book.Save();
+            string name = client.displayName;
+            int fee = Lending.SawyerFee(loan);
+            var first = new Dialogue().SetText(name, introduced ? Text.LeungAgain(count) : Text.LeungIntro(count));
+            Dialogue offer = first.NextDialogue().SetText(name, Text.LeungOwes(loan.name, loan.Outstanding))
+                .NextDialogue().SetText(name, Text.LeungFee(fee));
+
+            Dialogue hire = new Dialogue().SetText("PLAYER", Text.LeungHire(fee));
+            hire.SetNextDialogue(new Dialogue().SetText(name, Text.LeungHired()).SetEndAction(Clients.Leave));
+            offer.AddChoice(ChoiceItem(), "hire", "", hire, () => Hire(loan, fee, Collector.Leung), () => Game.Cash >= fee);
+
+            Dialogue decline = new Dialogue().SetText("PLAYER", Text.LeungDecline());
+            decline.SetNextDialogue(new Dialogue().SetText(name, Text.LeungDeclined()).SetEndAction(Clients.Leave));
+            offer.AddChoice(ChoiceItem(), "decline", "", decline, null);
+            MoneylendingMod.Log("Mr. Leung at the counter for loan #" + loan.id + ", fee " + fee + ", " + (introduced ? "later visit" : "first visit") + ", pending " + count);
+            return first;
+        }
+
+        // ---- Hiring a collector and the night's result ------------------------------------------------------------
+
+        private static void Hire(Loan loan, int fee, string collector)
+        {
+            PlayerStore store = PlayerStore.Instance;
+            if (store.playerCash < fee || loan.sawyerHiredDay >= 0)
+                return;
+            store.ModCash(-fee, true);
+            loan.sawyerHiredDay = Game.Day;
+            loan.sawyerFee = fee;
+            loan.collector = collector;
+            if (collector == Collector.Leung)
+                Book.S.leungFees += fee;
+            else
+                Book.S.sawyerFees += fee;
+            Book.Save();
+            MoneylendingMod.Log((collector == Collector.Leung ? "Mr. Leung" : "Sawyer") + " hired for loan #" + loan.id + ", fee " + fee);
+        }
+
+        // Resolved on the night of the day the collector was paid. Sawyer's Crew and Mr. Leung have the same chance and
+        // the same result; the night log names the one who was paid. A commission paid to Sawyer before his death is
+        // resolved as his.
+        internal static void ResolveCollection(Loan loan)
+        {
+            bool leung = Collector.IsLeung(loan);
             Profile p = Profiles.Get(loan.profile);
             if (RNG.Roll(Lending.SawyerChance(loan)))
             {
@@ -364,18 +437,18 @@ namespace Moneylending
                 loan.recovered = amount;
                 loan.paid = loan.total;
                 loan.status = (int)LoanStatus.Collected;
-                string log = Text.SawyerCollected(amount, loan.name);
+                string log = leung ? Text.LeungCollected(amount, loan.name) : Text.SawyerCollected(amount, loan.name);
                 if (p != null && p.SawyerRepCost > 0 && Game.HasReputation(p.Faction))
                 {
                     StoreReputation.ModReputation(p.Faction, -p.SawyerRepCost, false);
                     if (p.Faction == Profiles.LowerLevel)
-                        log = Text.Join(log, Text.SawyerWordSpread());
+                        log = Text.Join(log, leung ? Text.LeungWordSpread() : Text.SawyerWordSpread());
                 }
                 Game.NightLog(log, Game.GoodNews);
             }
             else
             {
-                Game.NightLog(Text.SawyerFailed(loan.name), Game.Warning);
+                Game.NightLog(leung ? Text.LeungFailed(loan.name) : Text.SawyerFailed(loan.name), Game.Warning);
             }
         }
     }

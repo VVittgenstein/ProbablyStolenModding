@@ -1,7 +1,7 @@
 using System;
 
 [assembly: System.Reflection.AssemblyTitle("Moneylending")]
-[assembly: System.Reflection.AssemblyVersion("1.5.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
 
 namespace Moneylending
 {
@@ -113,6 +113,7 @@ namespace Moneylending
             {
                 Unlock.Register();
                 Book.Load();
+                Collector.PortraitKey();
             }
             catch (Exception e)
             {
@@ -128,13 +129,16 @@ namespace Moneylending
         // and later recreates customers by identifier. Visitors queued for a later day are also stored by identifier, so the
         // per-loan identifiers have to exist before any queue is rebuilt. A load from inside a run can keep the same
         // PlayerStore object (PlayerStore.ResetData clears it only on the way to the main menu), so Book.S would not notice
-        // the new save on its own; the ledger is read explicitly on every load.
+        // the new save on its own; the ledger is read explicitly on every load. Mr. Leung's portrait is put into the scene's
+        // SpriteDict here as well, before F5 Quick Save Plus restores a visitor that refers to it.
         private static void OnGameRead()
         {
             try
             {
                 Book.Load();
                 Clients.RegisterRecords();
+                if (Collector.PortraitKey() == null)
+                    Warn("Mr. Leung's portrait is not in the scene's sprites yet");
             }
             catch (Exception e)
             {
@@ -152,6 +156,7 @@ namespace Moneylending
             {
                 Unlock.Register();
                 Log("ledger loaded: " + Book.S.loans.Count + " loan(s), " + Book.S.debts.Count + " debt(s)");
+                Collector.CheckLegacy();
                 Sign.GiveIfMissing();
             }
             catch (Exception e)
@@ -202,7 +207,7 @@ namespace Moneylending
 
         // The game 1.0.0.12 (buildid 26496118) lets the player shoot Sawyer dead (StoreClientListStory.SetupSawyer); the
         // game then sets StoreClientData.isSawyerDead and stops sending him. 1.4.1: this mod stops sending him too
-        // (VVittgenstein 2026-11-07).
+        // (VVittgenstein 2026-11-07); 1.6.0: Mr. Leung collects in his place (Collector).
         internal static bool SawyerDead
         {
             get

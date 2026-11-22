@@ -12,7 +12,7 @@ Seven complete mod build projects for [Probably Stolen](https://store.steampower
 | [GunsmithExpansion2077](GunsmithExpansion2077/) | 0.7.1 | Four additional guns for Gunsmith Expansion / 枪匠拓展 2077 附加包 | [3836151420](https://steamcommunity.com/sharedfiles/filedetails/?id=3836151420) |
 | [KeptShotgun](KeptShotgun/) | 1.1.3 | Armed robbery and intimidation / 持枪抢劫与威胁议价 | [3830273949](https://steamcommunity.com/sharedfiles/filedetails/?id=3830273949) |
 | [MentorNoteAutoFile](MentorNoteAutoFile/) | 1.1.1 | Automatically file mentor notes / 导师笔记自动收进手册 | [3828962954](https://steamcommunity.com/sharedfiles/filedetails/?id=3828962954) |
-| [Moneylending](Moneylending/) | 1.5.1 | Moneylending / 放贷 | [3830603988](https://steamcommunity.com/sharedfiles/filedetails/?id=3830603988) |
+| [Moneylending](Moneylending/) | 1.6.0 | Moneylending / 放贷 | [3830603988](https://steamcommunity.com/sharedfiles/filedetails/?id=3830603988) |
 
 The [open_beta](open_beta/) folder holds a variant of F5SnapshotSave for the game's open_beta branch. It is not published on the Workshop, has not been tested on open_beta and gets no timely support; see its README.
 

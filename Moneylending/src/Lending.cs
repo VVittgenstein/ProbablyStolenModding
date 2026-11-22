@@ -246,7 +246,7 @@ namespace Moneylending
         }
 
         // Earlier loans to the same kind of borrower: unpaid loans make defaulting look safe, repaid loans and
-        // debts collected by Sawyer's Crew make it look unwise.
+        // debts collected by Sawyer's Crew or Mr. Leung make it look unwise.
         internal static void History(string profile, int exceptId, out int repaid, out int defaulted, out int collected)
         {
             repaid = 0;
@@ -387,8 +387,9 @@ namespace Moneylending
                 log = Text.F(p != null ? p.Lines.DefaultLog : null, loan.name, loan.Outstanding);
             log = KeepPledges(loan, s, log);
             Game.NightLog(log, Game.Loss);
-            if (p != null && p.SawyerCan && !loan.wasAug && loan.Outstanding > 0 && !Game.SawyerDead)
-                loan.sawyerDay = Game.Day + 1;
+            // A collector comes the next day: Sawyer while he lives, Mr. Leung after his death (decided that morning).
+            if (p != null && p.SawyerCan && !loan.wasAug && loan.Outstanding > 0)
+                Collector.Schedule(loan, Game.Day + 1);
         }
 
         internal static void Arrest(Loan loan, Profile p)
@@ -416,6 +417,7 @@ namespace Moneylending
             return Text.Join(log, Text.PledgeKept(names));
         }
 
+        // The fee and the chance of Sawyer's Crew, also Mr. Leung's (VVittgenstein 2026-11-09: "沿用现行数值").
         internal static int SawyerFee(Loan loan)
         {
             return Math.Max(30, Game.RoundTo(loan.Outstanding / 4, 5));

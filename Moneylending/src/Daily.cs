@@ -22,10 +22,13 @@ namespace Moneylending
                 {
                     if (loan.IsActive && loan.visitDay == day && loan.lastVisitDay != day && Comes(loan.Result))
                         Clients.Insert(manager, Visits.CreateRepay(loan.id));
-                    else if (loan.status == (int)LoanStatus.Defaulted && loan.sawyerDay == day && !loan.sawyerOffered && loan.sawyerHiredDay < 0
-                        && !Game.SawyerDead)
-                        Clients.Insert(manager, Visits.CreateSawyer(loan.id));
+                    else if (Collector.DueOn(loan, day))
+                        Clients.Insert(manager, Collector.CreateVisitor(loan.id));
                 }
+                // A loan that defaulted after Sawyer's death in an earlier version of the mod: one a day.
+                Loan earlier = Collector.ScheduleLegacy(day);
+                if (earlier != null)
+                    Clients.Insert(manager, Collector.CreateVisitor(earlier.id));
 
                 Debts.OnMorning(manager, day);
 
@@ -62,9 +65,10 @@ namespace Moneylending
                 {
                     if (loan.status == (int)LoanStatus.Defaulted)
                     {
+                        // A collector who was not received today comes again tomorrow, within the visit window.
                         if (loan.sawyerHiredDay == day)
-                            Visits.ResolveSawyer(loan);
-                        else if (loan.sawyerDay == day && !loan.sawyerOffered && loan.sawyerHiredDay < 0 && loan.sawyerDay - loan.closedDay < 3)
+                            Visits.ResolveCollection(loan);
+                        else if (loan.sawyerDay == day && !loan.sawyerOffered && loan.sawyerHiredDay < 0 && day + 1 < Collector.WindowStart(loan) + Collector.WindowDays)
                             loan.sawyerDay = day + 1;
                         continue;
                     }

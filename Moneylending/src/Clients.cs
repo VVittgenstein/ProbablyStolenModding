@@ -11,6 +11,7 @@ namespace Moneylending
         internal const string Borrower = "moneylending_borrower";
         internal const string RepayPrefix = "moneylending_repay_";
         internal const string SawyerPrefix = "moneylending_sawyer_";
+        internal const string LeungPrefix = "moneylending_leung_";
         internal const string SharkOffer = "moneylending_shark_offer";
         internal const string BankOffer = "moneylending_bank_offer";
         internal const string CollectPrefix = "moneylending_collect_";
@@ -36,6 +37,7 @@ namespace Moneylending
             Dictionary<string, Func<StoreClient>> dict = StoreClientListDict.storeClientDict;
             dict[RepayPrefix + Text.N(id)] = () => Visits.CreateRepay(id);
             dict[SawyerPrefix + Text.N(id)] = () => Visits.CreateSawyer(id);
+            dict[LeungPrefix + Text.N(id)] = () => Visits.CreateLeung(id);
         }
 
         internal static void RegisterDebt(int id)

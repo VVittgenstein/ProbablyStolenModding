@@ -22,6 +22,7 @@ namespace Moneylending
             f.Put("nextId", s.nextId); f.Put("lent", s.lent); f.Put("interestEarned", s.interestEarned); f.Put("lost", s.lost);
             f.Put("recovered", s.recovered); f.Put("sawyerFees", s.sawyerFees); f.Put("lastBorrowerDay", s.lastBorrowerDay);
             f.Put("lastSharkOfferDay", s.lastSharkOfferDay); f.Put("lastBankOfferDay", s.lastBankOfferDay);
+            f.Put("leungFees", s.leungFees); f.Put("leungMet", s.leungMet); f.Put("collectorChecked", s.collectorChecked); f.Put("legacyFrom", s.legacyFrom);
             sb.Append(f.Line("S")).Append('\n');
 
             if (s.request != null)
@@ -44,7 +45,8 @@ namespace Moneylending
                 f.Put("partialDone", l.partialDone); f.Put("outcome", l.outcome); f.Put("status", l.status); f.Put("closedDay", l.closedDay);
                 f.Put("hasCollateral", l.hasCollateral); f.Put("collateralName", l.collateralName); f.Put("collateralValue", l.collateralValue);
                 f.Put("collateralCount", l.collateralCount); f.Put("collateralKept", l.collateralKept); f.Put("sawyerDay", l.sawyerDay); f.Put("sawyerOffered", l.sawyerOffered);
-                f.Put("sawyerHiredDay", l.sawyerHiredDay); f.Put("sawyerFee", l.sawyerFee); f.Put("recovered", l.recovered);
+                f.Put("sawyerHiredDay", l.sawyerHiredDay); f.Put("sawyerFee", l.sawyerFee); f.Put("collector", l.collector);
+                f.Put("collectorFrom", l.collectorFrom); f.Put("legacy", l.legacy); f.Put("recovered", l.recovered);
                 sb.Append(f.Line("L")).Append('\n');
             }
 
@@ -79,6 +81,9 @@ namespace Moneylending
                         s.lost = f.Int("lost", 0); s.recovered = f.Int("recovered", 0); s.sawyerFees = f.Int("sawyerFees", 0);
                         s.lastBorrowerDay = f.Int("lastBorrowerDay", s.lastBorrowerDay); s.lastSharkOfferDay = f.Int("lastSharkOfferDay", s.lastSharkOfferDay);
                         s.lastBankOfferDay = f.Int("lastBankOfferDay", s.lastBankOfferDay);
+                        // 1.6.0 (Mr. Leung); a ledger written before has none of these and gets the defaults.
+                        s.leungFees = f.Int("leungFees", 0); s.leungMet = f.Bool("leungMet"); s.collectorChecked = f.Bool("collectorChecked");
+                        s.legacyFrom = f.Int("legacyFrom", -1);
                         break;
                     case "R":
                         var r = new Request();
@@ -99,6 +104,7 @@ namespace Moneylending
                         l.collateralCount = f.Int("collateralCount", l.hasCollateral ? 1 : 0);
                         l.sawyerDay = f.Int("sawyerDay", -1); l.sawyerOffered = f.Bool("sawyerOffered"); l.sawyerHiredDay = f.Int("sawyerHiredDay", -1);
                         l.sawyerFee = f.Int("sawyerFee", 0); l.recovered = f.Int("recovered", 0);
+                        l.collector = f.Str("collector"); l.collectorFrom = f.Int("collectorFrom", -1); l.legacy = f.Int("legacy", 0);
                         if (l.id > 0)
                             s.loans.Add(l);
                         break;

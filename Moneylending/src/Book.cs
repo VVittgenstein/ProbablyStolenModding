@@ -62,10 +62,15 @@ namespace Moneylending
         public int collateralValue;
         public int collateralCount;
         public bool collateralKept;
+        // The collector's visit for a defaulted loan: Sawyer's Crew, or Mr. Leung after Sawyer's death (Collector). The
+        // names are those of the saves made before 1.6.0.
         public int sawyerDay = -1;
         public bool sawyerOffered;
         public int sawyerHiredDay = -1;
         public int sawyerFee;
+        public string collector;
+        public int collectorFrom = -1;
+        public int legacy;
         public int recovered;
 
         internal int Outstanding
@@ -149,6 +154,13 @@ namespace Moneylending
         public int lost;
         public int recovered;
         public int sawyerFees;
+        public int leungFees;
+        // Mr. Leung has introduced himself (at his first visit to the counter).
+        public bool leungMet;
+        // The save has been checked once for loans that defaulted after Sawyer's death in an earlier version
+        // (Collector.CheckLegacy); legacyFrom is the first day one of them may get its visit, -1 when none is left.
+        public bool collectorChecked;
+        public int legacyFrom = -1;
         public int lastBorrowerDay = -1000;
         public int lastSharkOfferDay = -1000;
         public int lastBankOfferDay = -1000;
