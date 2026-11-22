@@ -36,3 +36,5 @@ open_beta/F5SnapshotSave/tools/generate_snapshot_schema.ps1
 F5SnapshotSave/tools/generate_spec_fields.ps1
 F5SnapshotSave/spec/
 Moneylending/workshop/page/
+F5ForceSave/workshop/page/
+F5SnapshotSave/workshop/page/
