@@ -158,6 +158,24 @@ namespace GunsmithExpansion
             return null;
         }
 
+        // Keep the display case object lookup available; callers that only need the item ID also use
+        // ShowcaseHelper so PawnshopBillboards can include its active hanging certificates.
+        internal static string DisplayedCertificateId()
+        {
+            GameItem certificate = DisplayedCertificate();
+            if (certificate != null)
+                return certificate.identifier;
+            if (EmporiumEntry.Instance == null || EmporiumEntry.Instance.showcaseElement == null)
+                return null;
+            for (int level = 1; level <= 4; level++)
+            {
+                string id = ItemId(level);
+                if (ShowcaseHelper.IsShowcaseContainItemById(id))
+                    return id;
+            }
+            return null;
+        }
+
         internal static int Chance()
         {
             int rank = Math.Max(1, Rank());
@@ -170,11 +188,11 @@ namespace GunsmithExpansion
         // on the days the ones before it fill that number (VVittgenstein 2026-11-07 20:06, current/T-006 quote 20; until then it was added at the end).
         internal static void AddPrediction(List<ValueTuple<string, int, string>> prediction)
         {
-            GameItem cert = DisplayedCertificate();
+            string certificateId = DisplayedCertificateId();
             // with nothing in the store to repair with he does not come (item 9)
-            if (cert == null || Rank() <= 0 || Repair.RepairableNow().Count == 0)
+            if (certificateId == null || Rank() <= 0 || Repair.RepairableNow().Count == 0)
                 return;
-            var entry = new ValueTuple<string, int, string>(ClientId, Chance(), cert.identifier);
+            var entry = new ValueTuple<string, int, string>(ClientId, Chance(), certificateId);
             int at = prediction.FindIndex(p => p.Item3 == ShowcaseHelper.SIGN_FIREARM || p.Item3 == ShowcaseHelper.SIGN_FIREARM_HEAVY);
             if (at < 0)
                 prediction.Add(entry);

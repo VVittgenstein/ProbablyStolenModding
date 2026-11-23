@@ -32,6 +32,7 @@ namespace GunsmithExpansion
     {
         // Level one keeps the id of the one blank chip there was until 0.6.2, so that those in old saves are of level one.
         internal const string BlankId = "gse_blank_chip";
+        private const string FramePrefix = "gse_frame_";
         private static readonly int[] BlankValues = { 348, 870, 1565 };
         private static readonly int[] ChipValues = { 524, 1294, 2353 };
 
@@ -95,7 +96,15 @@ namespace GunsmithExpansion
 
         internal static string FrameId(GunDef d)
         {
-            return "gse_frame_" + d.Id.Substring(4);
+            return FramePrefix + d.Id.Substring(4);
+        }
+
+        internal static bool IsModFrameChip(GameItem chip)
+        {
+            if (chip == null || !chip.IsTag("PROGRESS_ITEM_TAG") || !chip.IsTag("PROGRESS_ITEM_TARGET_ITEM_ID_TAG"))
+                return false;
+            string target = chip.GetTagReadonly("PROGRESS_ITEM_TARGET_ITEM_ID_TAG").GetString();
+            return target != null && target.StartsWith(FramePrefix, StringComparison.Ordinal);
         }
 
         internal static int Cells(GunDef d)
@@ -161,6 +170,33 @@ namespace GunsmithExpansion
                     widest = w;
             }
             return widest;
+        }
+
+        // Expand the printer's output tray without shrinking dimensions enlarged by another mod.
+        // GameGridInventory.SetShape replaces inventoryShape and revalidates existing items in place.
+        internal static bool EnsureOutputTraySize(PixelWindow window, GameGridInventory outputTray, int minWidth, int minHeight)
+        {
+            if (outputTray == null)
+                return false;
+            int curW = outputTray.inventoryShape != null ? outputTray.inventoryShape.width : 0;
+            int curH = outputTray.inventoryShape != null ? outputTray.inventoryShape.height : 0;
+            int targetW = Math.Max(curW, minWidth);
+            int targetH = Math.Max(curH, minHeight);
+            if (curW >= targetW && curH >= targetH)
+                return false;
+            outputTray.SetShape(targetW, targetH);
+            if (window != null)
+                window.Validate();
+            return true;
+        }
+
+        internal static bool EnsureOutputTraySize(GameItem printer, GameGridInventory outputTray, int minWidth, int minHeight)
+        {
+            if (printer == null || printer.IsTag(Reloader.IdentityTag))
+                return false;
+            if (outputTray == null)
+                outputTray = MachineHelper.GetBodyStorage(printer, 4) as GameGridInventory;
+            return EnsureOutputTraySize(printer.contentWindow, outputTray, minWidth, minHeight);
         }
 
         internal static void Register(ModItemDirectory directory)
@@ -254,29 +290,223 @@ namespace GunsmithExpansion
     {
         internal static bool KeepGameSize;
 
+        [HarmonyPriority(Priority.Last)]
         private static void Postfix(ValueTuple<PixelWindow, GameSlotInventory, GameGridInventory, GameGridInventory, GameSlotInventory, GameGridInventory, GameSlotInventory> __result)
         {
             if (KeepGameSize || __result.Item6 == null)
                 return;
-            __result.Item6.SetShape(Production.OutputWidth(), MachinePrinter.OUTPUT_HEIGHT);
-            if (__result.Item1 != null)
-                __result.Item1.Validate();
+            Production.EnsureOutputTraySize(__result.Item1, __result.Item6, Production.OutputWidth(), MachinePrinter.OUTPUT_HEIGHT);
+        }
+    }
+
+    // Zero-loss finish guard for this mod's frame chips (T-041 B-05). Ensures the output tray meets the required width
+    // before placement (even if another mod narrowed it after window creation), and when the tray cannot accept a printed
+    // gse_frame_* directly, routes it safely through store overflow and a 3x2 Gun Carton without calling EmporiumTryAdd's
+    // DestroyIfUnplaced. If the entire store cannot fit even a carton, holds the printer at full progress in STATE_WORKING
+    // so the finished frame is delivered on the next cycle once space is cleared instead of being destroyed.
+    [HarmonyPatch(typeof(MachinePrinter), nameof(MachinePrinter.FinishPrinting))]
+    internal static class PrinterFinishGuardPatch
+    {
+        [HarmonyPriority(Priority.High)]
+        private static bool Prefix(GameItem item, GameSlotInventory chipInv, GameGridInventory itemInventoryRight, GameGridInventory itemInventoryModule)
+        {
+            try
+            {
+                if (item == null || item.IsTag(Reloader.IdentityTag))
+                    return true;
+                int minW = Production.OutputWidth();
+                int minH = MachinePrinter.OUTPUT_HEIGHT;
+                Production.EnsureOutputTraySize(item, itemInventoryRight, minW, minH);
+
+                GameItem chip = chipInv != null ? chipInv.childItem : null;
+                if (!Production.IsModFrameChip(chip))
+                    return true;
+
+                List<GameItem> finished = MachineProgressHelper.GetFinishedItem(chip);
+                if (finished == null || finished.Count == 0)
+                    return true;
+
+                int needW = minW;
+                int needH = minH;
+                for (int i = 0; i < finished.Count; i++)
+                {
+                    GameItem f = finished[i];
+                    if (f == null || f.modifiedShape == null)
+                        continue;
+                    if (f.modifiedShape.width > needW)
+                        needW = f.modifiedShape.width;
+                    if (f.modifiedShape.height > needH)
+                        needH = f.modifiedShape.height;
+                }
+                Production.EnsureOutputTraySize(item, itemInventoryRight, needW, needH);
+
+                // Fast path: output tray directly accepts the single frame; let vanilla FinishPrinting run normally.
+                if (finished.Count == 1 && itemInventoryRight != null && finished[0] != null
+                    && GraphUtils.CanAccept(itemInventoryRight, finished[0]))
+                {
+                    finished[0].Destroy();
+                    return true;
+                }
+
+                var placedBare = new List<GameItem>();
+                var placedInCarton = new List<GameItem>();
+                var openCartons = new Dictionary<string, GameItem>();
+                string cartonPlace = null;
+                bool allPlaced = true;
+                int failedIndex = -1;
+
+                for (int i = 0; i < finished.Count; i++)
+                {
+                    GameItem frame = finished[i];
+                    if (frame == null)
+                        continue;
+                    if (!item.IsTag("PRINTER_INGOT_QUALITY_BONUS_INT"))
+                        item.ModifyTag("PRINTER_INGOT_QUALITY_BONUS_INT", s => { s.Enable(); s.SetInt(0); }, false);
+                    MachinePrinter.HandlePrintedItemQuality(frame, item, itemInventoryModule, false);
+                    if (TryPlaceBare(itemInventoryRight, frame))
+                    {
+                        placedBare.Add(frame);
+                        continue;
+                    }
+                    if (DeliveryBoxes.Hand(frame, openCartons, ref cartonPlace))
+                    {
+                        placedInCarton.Add(frame);
+                        continue;
+                    }
+                    // DeliveryBoxes.Hand already destroyed frame on failure.
+                    allPlaced = false;
+                    failedIndex = i;
+                    break;
+                }
+
+                if (allPlaced)
+                {
+                    MachineProgressHelper.FinishProgressTypeMachine(item);
+                    GeneralHelper.UnlockItem(chip);
+                    MachineHelper.UnlockModuleInv(item);
+                    item.SetSpriteAndShape("Items/items_tool2", "printer_off");
+                    if (placedInCarton.Count > 0)
+                    {
+                        string where = string.IsNullOrEmpty(cartonPlace) ? Text.Pick("前柜台", "the front counter") : cartonPlace;
+                        GunsmithMod.Log("printer output tray full: packed printed frame for " + chip.identifier + " into a carton at " + where);
+                        if (PlayerStore.Instance != null)
+                        {
+                            PlayerStore.Instance.AddNightLog(
+                                string.Format(
+                                    Text.Pick("3D打印机输出托盘已满，已将打印完成的机匣装入枪械盒并放至{0}。",
+                                        "The 3D printer output tray was full. The printed frame was packed into a Gun Carton and placed at {0}."),
+                                    where),
+                                "#F5C542");
+                        }
+                    }
+                    else
+                    {
+                        GunsmithMod.Log("printer output tray full: routed printed frame for " + chip.identifier + " into store overflow");
+                    }
+                    return false;
+                }
+
+                // Roll back any un-iterated or earlier placed frames so the next cycle retries cleanly with zero duplication.
+                for (int i = failedIndex + 1; i < finished.Count; i++)
+                {
+                    if (finished[i] != null)
+                        finished[i].Destroy();
+                }
+                for (int i = 0; i < placedBare.Count; i++)
+                {
+                    if (placedBare[i] != null)
+                        placedBare[i].Destroy();
+                }
+                for (int i = 0; i < placedInCarton.Count; i++)
+                {
+                    if (placedInCarton[i] != null)
+                        placedInCarton[i].Destroy();
+                }
+                foreach (GameItem box in openCartons.Values)
+                {
+                    if (box != null)
+                        box.Destroy();
+                }
+
+                if (item.IsTag("MACHINE_PROGRESS_TARGET_TAG"))
+                {
+                    int target = item.GetTagReadonly("MACHINE_PROGRESS_TARGET_TAG").GetInt();
+                    item.ModifyTag("MACHINE_PROGRESS_CURRENT_TAG", s => s.SetInt(target), false);
+                }
+
+                GunsmithMod.Warn("printer output tray and store full: held finished frame for " + chip.identifier + " in printer");
+                if (PlayerStore.Instance != null)
+                {
+                    PlayerStore.Instance.AddNightLog(
+                        Text.Pick("3D打印机输出托盘和店铺空间均已满，已完成打印的机匣暂留在打印机内。清理空间后将在下一周期自动输出。",
+                            "The 3D printer output tray and store are full. The finished frame is held in the printer and will be delivered on the next cycle once space is cleared."),
+                        "#F5C542");
+                }
+                return false;
+            }
+            catch (Exception e)
+            {
+                GunsmithMod.Warn("printer finish guard: " + e.Message);
+                return true;
+            }
+        }
+
+        private static bool TryAddInto(GraphNodeStorage place, GameItem item)
+        {
+            if (place == null || !GraphUtils.CanAccept(place, item))
+                return false;
+            if (GraphUtils.TryAcceptAll(place, item, -1) > 0)
+                return false;
+            if (item.parentInventory == null)
+                GraphUtils.DestroyIfUnplaced(item);
+            return true;
+        }
+
+        private static bool TryPlaceBare(GameGridInventory outputTray, GameItem item)
+        {
+            if (item == null)
+                return false;
+            if (outputTray != null && TryAddInto(outputTray, item))
+                return true;
+            if (outputTray != null && HopperHelper.TryRouteOverflow(outputTray, item))
+                return true;
+            EmporiumEntry store = EmporiumEntry.Instance;
+            if (store == null)
+                return false;
+            if (MapUIManager.Instance != null && MapUIManager.Instance.isOutside
+                && item.parentInventory != store.afterhourInventory
+                && store.afterhourWindow != null
+                && TryAddInto(store.afterhourWindow, item))
+                return true;
+            if (TryAddInto(store.backInvinvElement, item))
+                return true;
+            if (TryAddInto(store.invElement, item))
+                return true;
+            if (TryAddInto(store.showcaseElement, item))
+                return true;
+            if (TryAddInto(store.frontInvinvElement, item))
+                return true;
+            return false;
         }
     }
 
     // Precision printing of tier three chips (final-strategy 37): the printer needs a module that raises quality in its
     // module bay and takes only metal ingots of high purity or better. The module is asked for as a machine tag, like
     // the game's metal printing and CNC modules (MachineProgressHelper.AddRequiredMachineTag, listed in the chip's
-    // tooltip); the printer gets or loses the tag from its modules each time it checks a precision chip
-    // (MachineProgressHelper.CanStart). Any installed module with a quality bonus above 0 counts: the game's quality
-    // (+8), fineness (+25) and neural core modules. Ingots of lower purity are left out of what the printer counts and
-    // consumes for these chips, so the frame's quality comes from the high purity ingots (MachinePrinter.
-    // CaptureIngotQuality reads the same list). Agent's decisions: "high purity" is the game's high grade or better
-    // (high, very high, perfect), and which modules count.
+    // tooltip). The tag is synchronized whenever module effects are recalculated (ModuleHelper.ApplyBasicModuleEffect),
+    // when the printer refreshes its module tags at cycle start (MachinePrinter.SyncModuleTags), and before checking
+    // start eligibility (MachineProgressHelper.CanStart). Any positive total machine quality bonus or any installed
+    // module/node with static (BONUS_PERCENTAGE_QUALITY_INT) or computed temporary (TEMP_PERCENTAGE_QUALITY_INT)
+    // quality bonus above 0 counts. Ingots of lower purity are left out of what the printer counts and consumes for
+    // these chips, so the frame's quality comes from the high purity ingots (MachinePrinter.CaptureIngotQuality reads
+    // the same list). Agent's decisions: "high purity" is the game's high grade or better (high, very high, perfect),
+    // and which modules count.
     internal static class Precision
     {
         internal const string QualityTag = "GSE Quality Module";
         private const string QualityBonus = "BONUS_PERCENTAGE_QUALITY_INT";
+        private const string TempQualityBonus = "TEMP_PERCENTAGE_QUALITY_INT";
+        private const string TotalQualityBonus = "TOTAL_PERCENTAGE_QUALITY_BONUS_INT";
         private static readonly string[] HighPurity = { "INGOT_PURITY_HIGH", "INGOT_PURITY_VERY_HIGH", "INGOT_PURITY_PERFECT" };
 
         internal static void Register()
@@ -292,14 +522,37 @@ namespace GunsmithExpansion
             return d != null && d.Tier == "三档";
         }
 
+        private static List<GameItem> SafeModules(GameItem machine, GameInventory moduleBay)
+        {
+            if (moduleBay != null)
+                return moduleBay.childItems;
+            if (machine == null)
+                return null;
+            var inv = MachineHelper.GetBodyStorage(machine, 1) as GameGridInventory;
+            return inv != null ? inv.childItems : null;
+        }
+
         internal static bool HasQualityModule(GameItem machine)
         {
-            List<GameItem> modules = machine != null ? MachineHelper.GetModules(machine) : null;
+            return HasQualityModule(machine, null);
+        }
+
+        internal static bool HasQualityModule(GameItem machine, GameInventory moduleBay)
+        {
+            if (machine == null)
+                return false;
+            if (machine.IsTag(TotalQualityBonus) && machine.GetTagReadonly(TotalQualityBonus).GetInt() > 0)
+                return true;
+            List<GameItem> modules = SafeModules(machine, moduleBay);
             if (modules == null)
                 return false;
             foreach (GameItem m in modules)
             {
-                if (m != null && m.IsTag(QualityBonus) && m.GetTagReadonly(QualityBonus).GetInt() > 0)
+                if (m == null)
+                    continue;
+                if (m.IsTag(QualityBonus) && m.GetTagReadonly(QualityBonus).GetInt() > 0)
+                    return true;
+                if (m.IsTag(TempQualityBonus) && m.GetTagReadonly(TempQualityBonus).GetInt() > 0)
                     return true;
             }
             return false;
@@ -318,10 +571,39 @@ namespace GunsmithExpansion
 
         internal static void SyncTag(GameItem machine)
         {
-            if (HasQualityModule(machine))
+            SyncTag(machine, null);
+        }
+
+        internal static void SyncTag(GameItem machine, GameInventory moduleBay)
+        {
+            if (machine == null || machine.IsTag(Reloader.IdentityTag))
+                return;
+            if (HasQualityModule(machine, moduleBay))
                 machine.EnableTag(QualityTag, false);
             else if (machine.IsTag(QualityTag))
                 machine.DisableTag(QualityTag, false);
+        }
+    }
+
+    [HarmonyPatch(typeof(MachinePrinter), nameof(MachinePrinter.SyncModuleTags))]
+    internal static class PrecisionSyncTagsPatch
+    {
+        private static void Postfix(GameItem printer, GameGridInventory moduleBay)
+        {
+            if (printer == null || printer.IsTag(Reloader.IdentityTag))
+                return;
+            Precision.SyncTag(printer, moduleBay);
+            Production.EnsureOutputTraySize(printer, null, Production.OutputWidth(), MachinePrinter.OUTPUT_HEIGHT);
+        }
+    }
+
+    [HarmonyPatch(typeof(ModuleHelper), nameof(ModuleHelper.ApplyBasicModuleEffect))]
+    internal static class PrecisionModuleEffectPatch
+    {
+        private static void Postfix(GameInventory invModule, GameItem system)
+        {
+            if (system != null && system.IsTag("PRINTER_TAG") && !system.IsTag(Reloader.IdentityTag))
+                Precision.SyncTag(system, invModule);
         }
     }
 
@@ -330,8 +612,21 @@ namespace GunsmithExpansion
     {
         private static void Prefix(GameItem sourceItem, GameItem machine)
         {
-            if (machine != null && Precision.IsPrecisionChip(sourceItem))
+            if (machine != null && !machine.IsTag(Reloader.IdentityTag)
+                && (Precision.IsPrecisionChip(sourceItem) || machine.IsTag("PRINTER_TAG")))
                 Precision.SyncTag(machine);
+        }
+
+        // Vanilla ApplyBasicModuleEffect does not clamp CURRENT_PROCESSING_SPEED_TAG; starting a print at <= 0 speed
+        // consumes materials and locks both chip and module bay indefinitely. Prevent mod frame chips from starting
+        // while processing speed is non-positive.
+        private static void Postfix(GameItem sourceItem, GameItem machine, ref bool __result)
+        {
+            if (!__result || machine == null || machine.IsTag(Reloader.IdentityTag))
+                return;
+            if (Production.IsModFrameChip(sourceItem) && machine.IsTag("CURRENT_PROCESSING_SPEED_TAG")
+                && machine.GetTagReadonly("CURRENT_PROCESSING_SPEED_TAG").GetInt() <= 0)
+                __result = false;
         }
     }
 

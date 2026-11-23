@@ -638,8 +638,31 @@ namespace GunsmithExpansion
                 SettleFailure(reservation, "not delivered");
         }
 
+        // HandleFutureClientQueue decrements days before processing due appointments. Remove the two
+        // entries together before the factory call: AddClient(null) writes an error, and Nobody takes a queue slot.
+        // Only appointments due at this opening are consumed (final-strategy 367).
+        internal static void RemoveDueRepairReturnsWithoutCertificate(PlayerStore store)
+        {
+            if (store == null || store.futurStoreClientIdQueue == null || store.futurStoreClientDayQueue == null
+                || Certificates.DisplayedCertificateId() != null)
+                return;
+            List<string> ids = store.futurStoreClientIdQueue;
+            List<int> days = store.futurStoreClientDayQueue;
+            for (int i = Math.Min(ids.Count, days.Count) - 1; i >= 0; i--)
+            {
+                string id = ids[i];
+                if (id == null || !id.StartsWith(RepairReturnPrefix, StringComparison.Ordinal) || days[i] > 1)
+                    continue;
+                ids.RemoveAt(i);
+                days.RemoveAt(i);
+            }
+        }
+
         internal static StoreClient CreateRepairReturn(string kind)
         {
+            // Also guard callers that invoke this registered factory directly.
+            if (Certificates.DisplayedCertificateId() == null)
+                return null;
             return RepairOrders.CreateCustomer(kind, Certificates.PickTier(), true) ?? Nobody();
         }
 
@@ -862,6 +885,15 @@ namespace GunsmithExpansion
     internal static class ReservationPickupLayoutEndedPatch
     {
         private static void Postfix() { ReservationPickupLayout.Restore(); }
+    }
+
+    [HarmonyPatch(typeof(PlayerStore), "HandleFutureClientQueue")]
+    internal static class RepairReturnFutureQueuePatch
+    {
+        private static void Prefix(PlayerStore __instance)
+        {
+            Reservations.RemoveDueRepairReturnsWithoutCertificate(__instance);
+        }
     }
 
     // Run before load hooks and before either F5 mod restores waiting customers from their saved identifiers.

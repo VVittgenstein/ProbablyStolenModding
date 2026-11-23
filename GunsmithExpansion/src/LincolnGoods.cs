@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using HarmonyLib;
+using UnityEngine;
 
 namespace GunsmithExpansion
 {
@@ -110,7 +111,7 @@ namespace GunsmithExpansion
         internal static readonly int[] AddOnSpecialPercent = { 0, 0, 0, 0, 6 };
 
         private const string UsedKey = "lincoln_used";
-        private static readonly Random rng = new Random();
+        private static readonly System.Random rng = new System.Random();
         private static List<Good> all;
         private static readonly Dictionary<string, int[]> shapes = new Dictionary<string, int[]>();
         private static Dictionary<string, int> used;
@@ -206,22 +207,103 @@ namespace GunsmithExpansion
         // Whether the game can make the item (an item of this mod is registered only when its picture is there).
         internal static bool Exists(Good g)
         {
+            if (g == null)
+                return false;
             if (g.Kind == Kind.Pack)
                 return DeliveryBoxes.Registered(DeliveryBoxes.CartonId);
             return Probe(g.ItemId) != null;
         }
 
-        // The cells an item takes unturned (width, height), read once from an item made for it; null when the game cannot make it.
+        // The cells an item takes unturned (width, height), read from known sizes or mod sprites without instantiating items;
+        // falls back once to a DirectoryMaster probe for game-owned or unknown item IDs.
         internal static int[] Cells(Good g)
         {
+            if (g == null)
+                return null;
             return Probe(g.Kind == Kind.Pack ? DeliveryBoxes.CartonId : g.ItemId);
+        }
+
+        private static LoadedMod FindLoadedMod(string modId)
+        {
+            List<LoadedMod> mods = ModLoader.Mods;
+            if (mods == null)
+                return null;
+            for (int i = 0; i < mods.Count; i++)
+            {
+                LoadedMod m = mods[i];
+                if (m != null && m.Manifest != null && m.Manifest.ID == modId)
+                    return m;
+            }
+            return null;
+        }
+
+        private static int[] CellsFromModSprite(string modId, string spriteKey)
+        {
+            LoadedMod mod = FindLoadedMod(modId);
+            Sprite sprite;
+            if (mod == null || mod.Sprites == null || !mod.Sprites.TryGetValue(spriteKey, out sprite) || sprite == null)
+                return null;
+            int gridSize = UISettings.current != null && UISettings.current.gridSize > 0 ? UISettings.current.gridSize : 16;
+            Rect r = sprite.rect;
+            return new[] { Math.Max(1, (int)r.width / gridSize), Math.Max(1, (int)r.height / gridSize) };
+        }
+
+        // Mirrors GameItem.SetSpriteAndShapeFromMod (width = (int)rect.width / gridSize, height = (int)rect.height / gridSize)
+        // and known 1x1 printer chips/dies so arriving at Lincoln Arms does not instantiate hundreds of temporary GameItems.
+        private static int[] FastCells(string id)
+        {
+            if (id.StartsWith("gse_chip_", StringComparison.Ordinal)
+                || id.StartsWith("gse_die_", StringComparison.Ordinal)
+                || id.StartsWith("printer_chip_", StringComparison.Ordinal))
+                return new[] { 1, 1 };
+
+            if (id == Cabinets.SmallId)
+                return CellsFromModSprite(GunsmithMod.ModId, Cabinets.SmallId + "_" + Cabinets.StartSlots + "_0");
+            if (id == Cabinets.LargeId)
+                return CellsFromModSprite(GunsmithMod.ModId, Cabinets.LargeId + "_" + Cabinets.StartSlots + "_0");
+            if (id == LincolnItems.AmmoBoxId)
+                return CellsFromModSprite(GunsmithMod.ModId, LincolnItems.AmmoBoxClosed);
+            if (id == Reloader.Id)
+                return CellsFromModSprite(GunsmithMod.ModId, Reloader.OffPicture);
+            if (id == Production.BlankId)
+                return CellsFromModSprite(GunsmithMod.ModId, Production.BlankId + "_1");
+
+            foreach (Ammo.Family f in Ammo.Families)
+            {
+                if (f.Id == id)
+                    return CellsFromModSprite(GunsmithMod.ModId, f.Picture);
+            }
+
+            if (id.StartsWith("gse_", StringComparison.Ordinal))
+            {
+                int[] own = CellsFromModSprite(GunsmithMod.ModId, id);
+                if (own != null)
+                    return own;
+                if (AddOn2077.Find(id) != null)
+                    return CellsFromModSprite(AddOn2077.ModId, id);
+            }
+
+            return null;
         }
 
         private static int[] Probe(string id)
         {
+            if (string.IsNullOrEmpty(id))
+                return null;
             int[] cells;
             if (shapes.TryGetValue(id, out cells))
                 return cells;
+            if (!DirectoryMaster.Has<GameItem>(id))
+            {
+                shapes[id] = null;
+                return null;
+            }
+            cells = FastCells(id);
+            if (cells != null)
+            {
+                shapes[id] = cells;
+                return cells;
+            }
             GameItem probe = null;
             try
             {

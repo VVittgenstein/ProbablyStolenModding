@@ -50,6 +50,8 @@ namespace GunsmithExpansion
     // that goes into the well); feet and top as first and last column, -1 when none. A muzzle device's column on the
     // barrel point (the column after the muzzle) is its first drawn column, or the next one for a device that starts
     // one column into the muzzle (data/muzzle-overlap.tsv).
+    // Spans stores compile-time 4-byte tuples (y0, y1, rx0, rx1) of inclusive sprite-pixel indices covering every drawn
+    // pixel (alpha > 1), pre-merged for 16 px cell occupancy so Mounting.Shape needs zero Texture2D.GetPixel calls.
     internal struct ViewBox
     {
         internal readonly int X0;
@@ -64,9 +66,10 @@ namespace GunsmithExpansion
         // gun, as the game's makeshift red dot sight and toy laser pointer do (data/view-attach.tsv); -1: its bottom or
         // top row.
         internal readonly int AttachRow;
+        internal readonly byte[] Spans;
 
         internal ViewBox(int x0, int y0, int x1, int y1, int boreRow = -1, int feetX0 = -1, int feetX1 = -1,
-            int muzzleX = -1, int attachRow = -1)
+            int muzzleX = -1, int attachRow = -1, byte[] spans = null)
         {
             AttachRow = attachRow;
             X0 = x0;
@@ -77,6 +80,7 @@ namespace GunsmithExpansion
             FeetX0 = feetX0;
             FeetX1 = feetX1;
             MuzzleX = muzzleX >= 0 ? muzzleX : x0;
+            Spans = spans;
         }
     }
 
@@ -105,6 +109,8 @@ namespace GunsmithExpansion
 
         private const int Cell = 16;
         private static readonly Dictionary<string, Sprite> sprites = new Dictionary<string, Sprite>();
+        private static readonly int[] NeighborDx = { 1, -1, 0, 0 };
+        private static readonly int[] NeighborDy = { 0, 0, 1, -1 };
 
         internal static void Enable(GameItem mod, ModDef d)
         {
@@ -165,6 +171,10 @@ namespace GunsmithExpansion
             return list;
         }
 
+        // Computes the exact 16x16 grid cells covered by drawn pixels of the mounted picture in gun-local cell
+        // coordinates (including cy < 0 above the gun top). Empty bounding-box corners remain 0; if any mod cell is
+        // not 4-connected to parent.shape, a minimal orthogonal bridge is added so the merged modifiedShape stays
+        // 4-connected.
         private static GridShapeBuilder Shape(string id, Slot slot, GameItem parent)
         {
             Sprite sprite;
@@ -172,14 +182,236 @@ namespace GunsmithExpansion
             ViewBox box;
             if (!Place(id, slot, parent, out sprite, out topLeft, out box))
                 return null;
-            // No cells above the gun: the game's own mods never add any there (a sight drawn above the picture
-            // takes no cell, like the game's red dot sight), and a test build that added a row above put a
-            // rifle half outside the top of the inventory (2026-11-01).
-            int cx0 = Floor(topLeft.x + box.X0), cx1 = Floor(topLeft.x + box.X1 - 1);
-            int cy0 = Math.Max(0, Floor(topLeft.y + box.Y0)), cy1 = Floor(topLeft.y + box.Y1 - 1);
-            if (cy1 < cy0)
-                return null;
-            return new GridShapeBuilder().SetDataFill(cx1 - cx0 + 1, cy1 - cy0 + 1, 1).SetTransform(cx0, cy0, false, 0);
+
+            int minCx, maxCx, minCy, maxCy;
+            byte[] mask;
+            int w, h;
+
+            byte[] spans = box.Spans;
+            if (spans != null && spans.Length >= 4)
+            {
+                minCx = int.MaxValue;
+                maxCx = int.MinValue;
+                minCy = int.MaxValue;
+                maxCy = int.MinValue;
+                for (int i = 0; i + 3 < spans.Length; i += 4)
+                {
+                    int bcx0 = Floor(topLeft.x + spans[i + 2]);
+                    int bcx1 = Floor(topLeft.x + spans[i + 3]);
+                    int bcy0 = Floor(topLeft.y + spans[i]);
+                    int bcy1 = Floor(topLeft.y + spans[i + 1]);
+                    if (bcx0 < minCx) minCx = bcx0;
+                    if (bcx1 > maxCx) maxCx = bcx1;
+                    if (bcy0 < minCy) minCy = bcy0;
+                    if (bcy1 > maxCy) maxCy = bcy1;
+                }
+                if (maxCx < minCx || maxCy < minCy)
+                    return null;
+
+                w = maxCx - minCx + 1;
+                h = maxCy - minCy + 1;
+                mask = new byte[w * h];
+                for (int i = 0; i + 3 < spans.Length; i += 4)
+                {
+                    int bcx0 = Floor(topLeft.x + spans[i + 2]);
+                    int bcx1 = Floor(topLeft.x + spans[i + 3]);
+                    int bcy0 = Floor(topLeft.y + spans[i]);
+                    int bcy1 = Floor(topLeft.y + spans[i + 1]);
+                    for (int cy = bcy0; cy <= bcy1; cy++)
+                    {
+                        int rowOffset = (cy - minCy) * w;
+                        for (int cx = bcx0; cx <= bcx1; cx++)
+                            mask[rowOffset + (cx - minCx)] = 1;
+                    }
+                }
+            }
+            else
+            {
+                minCx = Floor(topLeft.x + box.X0);
+                maxCx = Floor(topLeft.x + box.X1 - 1);
+                minCy = Floor(topLeft.y + box.Y0);
+                maxCy = Floor(topLeft.y + box.Y1 - 1);
+                if (maxCx < minCx || maxCy < minCy)
+                    return null;
+                w = maxCx - minCx + 1;
+                h = maxCy - minCy + 1;
+                mask = new byte[w * h];
+                for (int i = 0; i < mask.Length; i++)
+                    mask[i] = 1;
+            }
+
+            if (parent != null && parent.shape != null)
+                EnsureFourConnected(ref mask, ref minCx, ref minCy, ref w, ref h, parent.shape);
+
+            return new GridShapeBuilder().SetData(mask, w).SetTransform(minCx, minCy, false, 0);
+        }
+
+        // Guarantees every occupied cell in the mod mask is 4-connected to parentShape.
+        // Fast-paths without reallocating when all mod cells are already reachable via 4-neighbors from parentShape.
+        private static void EnsureFourConnected(ref byte[] mask, ref int minCx, ref int minCy, ref int w, ref int h,
+            GridShape parentShape)
+        {
+            int pw = parentShape.width;
+            int ph = parentShape.height;
+            if (pw <= 0 || ph <= 0)
+                return;
+
+            var parentCells = new HashSet<long>();
+            var reached = new HashSet<long>();
+            var queue = new Queue<long>();
+            for (int py = 0; py < ph; py++)
+            {
+                for (int px = 0; px < pw; px++)
+                {
+                    if (parentShape.GetLocal(px, py) != 0)
+                    {
+                        long k = PackCell(px, py);
+                        parentCells.Add(k);
+                        reached.Add(k);
+                        queue.Enqueue(k);
+                    }
+                }
+            }
+            if (parentCells.Count == 0)
+                return;
+
+            var modCells = new HashSet<long>();
+            for (int dy = 0; dy < h; dy++)
+            {
+                int row = dy * w;
+                for (int dx = 0; dx < w; dx++)
+                {
+                    if (mask[row + dx] != 0)
+                        modCells.Add(PackCell(minCx + dx, minCy + dy));
+                }
+            }
+            if (modCells.Count == 0)
+                return;
+
+            FloodIntoMod(queue, reached, modCells);
+
+            var unreached = new List<long>();
+            foreach (long k in modCells)
+            {
+                if (!reached.Contains(k))
+                    unreached.Add(k);
+            }
+            if (unreached.Count == 0)
+                return;
+
+            int maxCx = minCx + w - 1;
+            int maxCy = minCy + h - 1;
+            while (unreached.Count > 0)
+            {
+                int bestDist = int.MaxValue;
+                int bestAx = 0, bestAy = 0, bestBx = 0, bestBy = 0;
+                foreach (long rk in reached)
+                {
+                    int ax, ay;
+                    UnpackCell(rk, out ax, out ay);
+                    for (int i = 0; i < unreached.Count; i++)
+                    {
+                        int bx, by;
+                        UnpackCell(unreached[i], out bx, out by);
+                        int dist = Math.Abs(ax - bx) + Math.Abs(ay - by);
+                        if (dist < bestDist)
+                        {
+                            bestDist = dist;
+                            bestAx = ax;
+                            bestAy = ay;
+                            bestBx = bx;
+                            bestBy = by;
+                            if (bestDist <= 2)
+                                break;
+                        }
+                    }
+                    if (bestDist <= 2)
+                        break;
+                }
+
+                // Prefer stepping along the axis that keeps intermediate bridge cells inside the existing mod bounds.
+                bool stepXFirst = bestBx >= minCx && bestBx <= maxCx && bestAy >= minCy && bestAy <= maxCy;
+                int cx = bestAx;
+                int cy = bestAy;
+                if (stepXFirst)
+                {
+                    while (cx != bestBx)
+                    {
+                        cx += cx < bestBx ? 1 : -1;
+                        AddBridgeCell(cx, cy, modCells, reached, queue, ref minCx, ref maxCx, ref minCy, ref maxCy);
+                    }
+                    while (cy != bestBy)
+                    {
+                        cy += cy < bestBy ? 1 : -1;
+                        AddBridgeCell(cx, cy, modCells, reached, queue, ref minCx, ref maxCx, ref minCy, ref maxCy);
+                    }
+                }
+                else
+                {
+                    while (cy != bestBy)
+                    {
+                        cy += cy < bestBy ? 1 : -1;
+                        AddBridgeCell(cx, cy, modCells, reached, queue, ref minCx, ref maxCx, ref minCy, ref maxCy);
+                    }
+                    while (cx != bestBx)
+                    {
+                        cx += cx < bestBx ? 1 : -1;
+                        AddBridgeCell(cx, cy, modCells, reached, queue, ref minCx, ref maxCx, ref minCy, ref maxCy);
+                    }
+                }
+
+                FloodIntoMod(queue, reached, modCells);
+                unreached.RemoveAll(k => reached.Contains(k));
+            }
+
+            w = maxCx - minCx + 1;
+            h = maxCy - minCy + 1;
+            mask = new byte[w * h];
+            foreach (long k in modCells)
+            {
+                int cx, cy;
+                UnpackCell(k, out cx, out cy);
+                mask[(cy - minCy) * w + (cx - minCx)] = 1;
+            }
+        }
+
+        private static void FloodIntoMod(Queue<long> queue, HashSet<long> reached, HashSet<long> modCells)
+        {
+            while (queue.Count > 0)
+            {
+                int x, y;
+                UnpackCell(queue.Dequeue(), out x, out y);
+                for (int d = 0; d < 4; d++)
+                {
+                    long nk = PackCell(x + NeighborDx[d], y + NeighborDy[d]);
+                    if (modCells.Contains(nk) && reached.Add(nk))
+                        queue.Enqueue(nk);
+                }
+            }
+        }
+
+        private static void AddBridgeCell(int cx, int cy, HashSet<long> modCells, HashSet<long> reached, Queue<long> queue,
+            ref int minCx, ref int maxCx, ref int minCy, ref int maxCy)
+        {
+            long k = PackCell(cx, cy);
+            modCells.Add(k);
+            if (cx < minCx) minCx = cx;
+            if (cx > maxCx) maxCx = cx;
+            if (cy < minCy) minCy = cy;
+            if (cy > maxCy) maxCy = cy;
+            if (reached.Add(k))
+                queue.Enqueue(k);
+        }
+
+        private static long PackCell(int x, int y)
+        {
+            return ((long)x << 32) | (uint)y;
+        }
+
+        private static void UnpackCell(long packed, out int x, out int y)
+        {
+            x = (int)(packed >> 32);
+            y = (int)(packed & 0xFFFFFFFFL);
         }
 
         private static int Floor(int pixels)

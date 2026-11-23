@@ -1,5 +1,5 @@
 [assembly: System.Reflection.AssemblyTitle("GunsmithExpansion")]
-[assembly: System.Reflection.AssemblyVersion("0.7.8.0")]
+[assembly: System.Reflection.AssemblyVersion("0.8.1.0")]
 
 namespace GunsmithExpansion
 {
@@ -9,7 +9,7 @@ namespace GunsmithExpansion
     {
         internal const string ModId = "GunsmithExpansion";
         internal const string LogPrefix = "[GunsmithExpansion] ";
-        internal static string Version = "0.7.8";
+        internal static string Version = "0.8.1";
 
         public void Init(ModManifest manifest)
         {
@@ -33,6 +33,10 @@ namespace GunsmithExpansion
             ModHook.OnGameLoadedLate += Lincoln.OnGameLoaded;
             ModHook.OnGameLoadedLate -= LincolnGoods.Forget;
             ModHook.OnGameLoadedLate += LincolnGoods.Forget;
+            ModHook.OnGameLoadedLate -= ItemShapes.OnGameLoaded;
+            ModHook.OnGameLoadedLate += ItemShapes.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= StarterRecovery.OnGameLoaded;
+            ModHook.OnGameLoadedLate += StarterRecovery.OnGameLoaded;
             ModHook.OnNetworkUpgradeUnlocked -= RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked += RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked -= ManualServiceHook.OnUpgradeUnlocked;
@@ -43,6 +47,7 @@ namespace GunsmithExpansion
             ModHook.OnNewGameStarted += ManualStartHook.OnNewGameStarted;
             Cabinets.DefineSettings();
             AddOn2077.DefineSettings();
+            StarterRecovery.DefineSettings();
             Phone.Register();
             LincolnPhone.Register();
             LincolnVisits.Register();
@@ -67,6 +72,8 @@ namespace GunsmithExpansion
             ModHook.OnGameLoadedLate -= Cabinets.OnGameLoaded;
             ModHook.OnGameLoadedLate -= Lincoln.OnGameLoaded;
             ModHook.OnGameLoadedLate -= LincolnGoods.Forget;
+            ModHook.OnGameLoadedLate -= ItemShapes.OnGameLoaded;
+            ModHook.OnGameLoadedLate -= StarterRecovery.OnGameLoaded;
             ModHook.OnNetworkUpgradeUnlocked -= RetiredGunsmithService.OnUpgradeUnlocked;
             ModHook.OnNetworkUpgradeUnlocked -= ManualServiceHook.OnUpgradeUnlocked;
             ModHook.OnNewGameStarted -= GunsmithStartSignHook.OnNewGameStarted;

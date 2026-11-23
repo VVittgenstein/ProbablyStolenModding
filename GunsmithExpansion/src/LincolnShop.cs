@@ -1,29 +1,16 @@
 using System;
 using System.Collections.Generic;
 using HarmonyLib;
+using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 namespace GunsmithExpansion
 {
-    // Lincoln Arms at night (final-strategy 331, 332, 343, 350, 355, 359, 360; current/T-013): a place of the night map, open once
-    // Yuri Lincoln has made his first visit (LincolnVisits). Its card is gse_lincoln_map_card (296 x 168, PX05, accepted 2026-11-22
-    // 04:14); its scene is gse_lincoln_scene_yuri, or gse_lincoln_scene_ava on Yuri's day off (960 x 540, T-036 and PX03).
-    //   - The visit is the game's visit to Dr. Jackson (DrJacksonLocation.Arrive and Leave, read 2026-11-22): both counters shown, the
-    //     player's things on the counter top put aside until leaving, the front counter widened to 14 x 21 cells, the goods on it not
-    //     owned by the player, the one on duty as the client, bought by dragging to the counter top and paying on the game's tablet.
-    //   - The front counter is the window onto a longer shelf (331, 355): every good of the day is laid out in rows 14 cells wide,
-    //     one item for each piece in stock, a gun wider than the counter turned upright; the mouse wheel over the front counter shows
-    //     the rows above or below, a row at a time (the Agent's arrangement 2 of 04:15). The rare guns of the visit come first.
-    //   - Prices are the game's price features of the items (LincolnGoods.AddPriceFeatures), rounded up (LincolnPriceRoundingPatch);
-    //     paying counts for the favor (342 ①) and takes the piece from the day's stock (350 ②).
-    //   - The one on duty speaks (350 ⑥): about 0.4 seconds after the fade, the lines of a first visit at a new level or of the first
-    //     night with Ava (2 or 3), otherwise one greeting; one idle line after 22 seconds without a line; a line on putting a good on
-    //     the counter top (not twice in 8 seconds) and on taking all of them back (not twice in 12 seconds); on paying the line of
-    //     the deal, and 4 seconds later the farewell. Each line stays 4.5 to 6 seconds in the game's client bubble.
-    // Agent's arrangements (not confirmed by yzz): the game's scene of Dr. Jackson has his tablet drawn and a click area over it; these
-    // scenes have none, so the place's panel has a button with the game's own words for it ("Open the Tablet"); a line under the
-    // favor line says which rows are shown; what the player left on the ground comes back to the store as at Dr. Jackson's, which the
-    // warning on leaving says.
+    // Lincoln Arms night visit: W1 item ownership, stock, pooled shelf objects and player-owned shelf rows are retained.
+    // W5 uses the native upgrade-merchant return panel and negotiation tablet. Pagination is attached above the shelf.
+    // Reference: final-strategy 331, 342, 350 and 366; T-041 W5.
     internal static class LincolnShop
     {
         internal const string LocationId = "gse_lincoln_arms";
@@ -38,10 +25,6 @@ namespace GunsmithExpansion
         private const float CommentPause = 8f;
         private const float WithdrawnPause = 12f;
         private const float ByeDelay = 4f;
-        private const string StatusLabel = "gse_lincoln_status";
-        private const string ScrollLabel = "gse_lincoln_rows";
-        private const string TabletButton = "gse_lincoln_tablet";
-
         private sealed class Slot
         {
             internal LincolnGoods.Good Good;
@@ -53,8 +36,14 @@ namespace GunsmithExpansion
             internal bool Sold;
         }
 
+        private sealed class OwnedSlot
+        {
+            internal GameItem Item;
+            internal int X, AbsY, GlobalHeight, Orientation;
+            internal bool Flipped;
+        }
+
         private static DelegateAfterhourLocation location;
-        private static CustomUIWindow panel;
         private static bool here;
         private static bool ava;
         private static int level;
@@ -62,7 +51,8 @@ namespace GunsmithExpansion
         private static readonly List<int> rowTop = new List<int>();
         private static readonly List<int> rowHeight = new List<int>();
         private static readonly Dictionary<GameItem, Slot> shown = new Dictionary<GameItem, Slot>();
-        private static int firstRow, lastRow;
+        private static readonly List<OwnedSlot> ownedOnShelf = new List<OwnedSlot>();
+        private static int firstRow, lastRow, shownTop;
 
         private static readonly List<KeyValuePair<float, string>> pending = new List<KeyValuePair<float, string>>();
         private static bool greeted;
@@ -84,7 +74,7 @@ namespace GunsmithExpansion
         {
             if (location != null)
                 return;
-            location = ModHelper.AddAfterhourLocation(GunsmithMod.ModId, LocationId, () => Lincoln.ShopName(), Arrive, Leave, BuildPanel,
+            location = ModHelper.AddAfterhourLocation(GunsmithMod.ModId, LocationId, () => Lincoln.ShopName(), Arrive, Leave, null,
                 Key(MapCard), Key(SceneYuri), null, () => Lincoln.Introduced(), () => Lincoln.Introduced());
             if (location == null)
             {
@@ -112,22 +102,23 @@ namespace GunsmithExpansion
             ModHook.OnAfterhourArriveLate -= OnArriveLate;
         }
 
-        // Before the game shows the scene (MapUIManager.Travel: ShowStage reads BackgroundKey before Arrive).
+        // The native panel reference is set before MapUIManager.OpenLocationPanel evaluates PanelObject.
         private static void OnArriveEarly(string id)
         {
-            if (id == LocationId && location != null)
-                location.backgroundKey = Key(Lincoln.AvaOnDuty() ? SceneAva : SceneYuri);
+            if (id != LocationId || location == null)
+                return;
+            location.backgroundKey = Key(Lincoln.AvaOnDuty() ? SceneAva : SceneYuri);
+            MapUIManager map = MapUIManager.Instance;
+            if (map != null)
+                location.panelObject = map.UIUpgradeMerchantPanel;
         }
 
-        // MapUIManager.OpenLocationPanel sets panelPosition (620, 260) on the right, over the 14 x 21 front counter and tablet;
-        // move Lincoln Arms' panel to the left wall below the credit display and size its labels for longer translations.
         private static void OnArriveLate(string id)
         {
-            if (id == LocationId && panel != null && panel.IsAlive)
-            {
-                FitPanel();
-                panel.SetPosition(new Vector2(-690f, -80f));
-            }
+            if (id != LocationId || !here)
+                return;
+            RefreshShelfHeader();
+            LincolnVisitUI.Tick();
         }
 
         private static void Arrive()
@@ -143,10 +134,14 @@ namespace GunsmithExpansion
                 ava = Lincoln.AvaOnDuty();
                 level = Lincoln.Level();
                 store.playerLocation = (PlayerStore.PlayerLocation)1;
+                LincolnShelfHeader.Capture(entry.frontInvWindow);
                 entry.frontInvWindow.Show();
                 entry.backInvWindow.Show();
                 map.TransferBackInvToCounter();
                 entry.ExpandFrontCounterGrid();
+                LincolnShelfHeader.Attach(PageUp, PageDown);
+                ownedOnShelf.Clear();
+                shownTop = 0;
                 Lay();
                 firstRow = 0;
                 store.currentClientInstance = StoreClientInstance.CreateClientInstance(CreateDealer());
@@ -154,15 +149,15 @@ namespace GunsmithExpansion
                 StoreUIManager.Instance.HideClient();
                 store.isClientArrived = true;
                 StoreUIManager.Instance.SetClientPositionToDrJackson();
+                LincolnVisitUI.Begin();
                 ShowRows();
-                StoreUIManager.Instance.storeCreditDisplay.creditDisplayText.gameObject.SetActive(true);
-                map.SetCreditDisplayPositionToDrJackson();
                 pending.Clear();
                 greeted = false;
                 greetAt = -1;
                 hideAt = -1;
                 lastLine = Time.time;
                 lastComment = lastWithdrawn = lastPaid = -100;
+                tickWarned = false;
                 GunsmithMod.Log("at Lincoln Arms: " + (ava ? "Ava" : "Yuri") + " on duty, favor " + Lincoln.PointsText() + " (Lv." + level + "), "
                     + slots.Count + " pieces in " + rowTop.Count + " rows");
             }
@@ -186,21 +181,52 @@ namespace GunsmithExpansion
                 if (entry == null || map == null)
                     return;
                 var owned = new List<GameItem>();
+                var ownedSet = new HashSet<GameItem>();
                 foreach (GameGridInventory inv in new[] { entry.frontInvinvElement, entry.backInvinvElement })
                 {
+                    if (inv == null)
+                        continue;
                     foreach (GameItem item in new List<GameItem>(inv.childItems))
                     {
-                        if (item == null || !GeneralHelper.IsItemOwned(item))
+                        if (IsDestroyedItem(item) || !GeneralHelper.IsItemOwned(item))
                             continue;
+                        SetItemVisible(item, true);
                         item.CloseContentWindow(true);
                         inv.Expel(item);
-                        owned.Add(item);
+                        if (ownedSet.Add(item))
+                            owned.Add(item);
                     }
+                }
+                // Rescue any player-owned items that were placed on the shelf and scrolled out of view.
+                foreach (OwnedSlot o in ownedOnShelf)
+                {
+                    GameItem item = o != null ? o.Item : null;
+                    if (IsDestroyedItem(item) || !GeneralHelper.IsItemOwned(item))
+                        continue;
+                    if (item.parentInventory != null && !ReferenceEquals(item.parentInventory, entry.frontInvinvElement))
+                        continue;
+                    SetItemVisible(item, true);
+                    item.CloseContentWindow(true);
+                    if (item.parentInventory != null)
+                        item.parentInventory.Expel(item);
+                    if (ownedSet.Add(item))
+                        owned.Add(item);
+                }
+                ownedOnShelf.Clear();
+                // Destroy all cached unbought shop items (including those parked off-screen) so none leak under tempRoot.
+                foreach (Slot s in slots)
+                {
+                    GameItem item = s != null ? s.Item : null;
+                    if (IsDestroyedItem(item) || GeneralHelper.IsItemOwned(item))
+                        continue;
+                    item.Destroy();
+                    s.Item = null;
                 }
                 shown.Clear();
                 slots.Clear();
                 rowTop.Clear();
                 rowHeight.Clear();
+                shownTop = 0;
                 entry.ResetFrontCounterGrid();
                 entry.ClearFrontInv();
                 entry.ClearBackInv(true);
@@ -214,12 +240,41 @@ namespace GunsmithExpansion
                 }
                 map.ResetCreditDisplayPosition();
                 map.DeactivateClientOutsideStore();
-                panel = null;
                 GunsmithMod.Log("left Lincoln Arms, " + owned.Count + " things of the store taken back from the counters");
             }
             catch (Exception e)
             {
                 GunsmithMod.Warn("leaving Lincoln Arms: " + e);
+            }
+            finally
+            {
+                RestoreVisitUI();
+            }
+        }
+
+        private static void RestoreVisitUI()
+        {
+            try
+            {
+                LincolnShelfHeader.Restore();
+            }
+            catch (Exception e)
+            {
+                GunsmithMod.Warn("Lincoln shelf header cleanup: " + e.Message);
+            }
+            try
+            {
+                LincolnVisitUI.Restore();
+            }
+            catch (Exception e)
+            {
+                GunsmithMod.Warn("Lincoln visit UI cleanup: " + e.Message);
+            }
+            if (location != null)
+            {
+                if (location.panelObject != null)
+                    location.panelObject.SetActive(false);
+                location.panelObject = null;
             }
         }
 
@@ -232,9 +287,9 @@ namespace GunsmithExpansion
             c.clientFaction = "FACTION_LOWER_LEVEL";
             c.isBargainAvailable = false;
             c.nonShootable = true;
-            // as Dr. Jackson (StoreClientList.CreateInventor); he buys nothing of the player's (the Agent's arrangement 3 of 04:15)
-            c.clientIntent = (StoreClient.ClientIntent)3;
-            c.isRegularSellDisable = true;
+            // ClientIntent.SELL (2): the dealer sells to the player and never buys any player-owned item.
+            // Keep isRegularSellDisable false (default) so PlayerStore.CanBuyItemFromTable and NegociationUIManager allow buying.
+            c.clientIntent = StoreClient.ClientIntent.SELL;
             c.mainDialogue.SetText(c.displayName, Pick(Greetings()).Get());
             c.onItemAddedToClient = OnClientCounter;
             c.onItemAddedToWeighted = OnWeighted;
@@ -320,47 +375,177 @@ namespace GunsmithExpansion
             }
         }
 
+        private static bool IsDestroyedItem(GameItem item)
+        {
+            if (item == null)
+                return true;
+            GameItemElement el = item as GameItemElement;
+            return el != null && el.IsDestroyed();
+        }
+
+        private static void SetItemVisible(GameItem item, bool visible)
+        {
+            PixelElement pe = item as PixelElement;
+            if (pe != null && pe.handler != null && pe.handler.gameObject != null)
+                pe.handler.gameObject.SetActive(visible);
+        }
+
         private static bool OnFront(GameItem item)
         {
             EmporiumEntry entry = EmporiumEntry.Instance;
             return item != null && entry != null && ReferenceEquals(item.parentInventory, entry.frontInvinvElement);
         }
 
-        // The rows from firstRow that fit the counter: what is on the front counter is taken off and put again, a piece of a row now out
-        // of view is destroyed, one now in view is made. A piece on the counter top stays there.
+        private static void ParkItem(GameGridInventory front, GameItem item)
+        {
+            if (IsDestroyedItem(item))
+                return;
+            item.CloseContentWindow(true);
+            if (ReferenceEquals(item.parentInventory, front))
+                front.Expel(item);
+            SetItemVisible(item, false);
+        }
+
+        private static void MoveOnFront(GameItem item, int x, int y, bool flipped, int orientation)
+        {
+            GridShape cur = item.modifiedShape ?? item.shape;
+            if (cur == null)
+                return;
+            if (cur.minX == x && cur.minY == y && cur.flipped == flipped && cur.orientation == orientation)
+                return;
+            item.modifiedShape = new GridShapeBuilder(cur).SetTransform(x, y, flipped, orientation).Build();
+            GameItemElement el = item as GameItemElement;
+            if (el != null)
+                el.UpdateRectTransform();
+        }
+
+        private static bool IsAtSlot(GameItem item, Slot s, int y)
+        {
+            GridShape cur = item.modifiedShape ?? item.shape;
+            return cur != null && cur.minX == s.X && cur.minY == y && !cur.flipped && cur.orientation == (s.Turned ? 1 : 0);
+        }
+
+        private static void SyncOwnedOnShelf(GameGridInventory front)
+        {
+            for (int i = ownedOnShelf.Count - 1; i >= 0; i--)
+            {
+                OwnedSlot o = ownedOnShelf[i];
+                GameItem item = o != null ? o.Item : null;
+                if (IsDestroyedItem(item) || !GeneralHelper.IsItemOwned(item)
+                    || (item.parentInventory != null && !ReferenceEquals(item.parentInventory, front)))
+                    ownedOnShelf.RemoveAt(i);
+            }
+            foreach (GameItem item in new List<GameItem>(front.childItems))
+            {
+                if (IsDestroyedItem(item) || !GeneralHelper.IsItemOwned(item))
+                    continue;
+                GridShape shape = item.modifiedShape ?? item.shape;
+                if (shape == null)
+                    continue;
+                OwnedSlot record = null;
+                for (int i = 0; i < ownedOnShelf.Count; i++)
+                {
+                    if (ReferenceEquals(ownedOnShelf[i].Item, item))
+                    {
+                        record = ownedOnShelf[i];
+                        break;
+                    }
+                }
+                if (record == null)
+                {
+                    record = new OwnedSlot { Item = item };
+                    ownedOnShelf.Add(record);
+                }
+                record.X = shape.minX;
+                record.AbsY = shownTop + shape.minY;
+                record.GlobalHeight = Math.Max(1, shape.globalHeight);
+                record.Flipped = shape.flipped;
+                record.Orientation = shape.orientation;
+            }
+        }
+
+        // Shows the rows from firstRow that fit the 14 x 21 counter:
+        //   - Items staying in view shift in-place (updating modifiedShape + RectTransform) without expelling or churning price features.
+        //   - Shop items leaving view are expelled and hidden (cached until Leave) instead of destroyed and re-instantiated.
+        //   - Player-owned items placed back on the shelf scroll with their global row and are parked off-screen when out of view.
         private static void ShowRows()
         {
             EmporiumEntry entry = EmporiumEntry.Instance;
-            if (entry == null)
+            if (entry == null || entry.frontInvinvElement == null)
                 return;
             GameGridInventory front = entry.frontInvinvElement;
-            int top = rowTop.Count > 0 ? rowTop[Math.Min(firstRow, rowTop.Count - 1)] : 0;
+            int newTop = rowTop.Count > 0 ? rowTop[Math.Min(firstRow, rowTop.Count - 1)] : 0;
             lastRow = firstRow - 1;
-            for (int r = firstRow; r < rowTop.Count && rowTop[r] + rowHeight[r] - top <= Rows; r++)
+            for (int r = firstRow; r < rowTop.Count && rowTop[r] + rowHeight[r] - newTop <= Rows; r++)
                 lastRow = r;
-            var kept = new HashSet<Slot>();
+
+            SyncOwnedOnShelf(front);
+
+            // 1. Park items leaving view (and any unowned shop item displaced from its assigned slot).
             foreach (Slot s in slots)
             {
-                if (s.Item == null || !OnFront(s.Item) || GeneralHelper.IsItemOwned(s.Item))
+                if (IsDestroyedItem(s.Item) || GeneralHelper.IsItemOwned(s.Item) || !OnFront(s.Item))
                     continue;
-                front.Expel(s.Item);
-                if (s.Row >= firstRow && s.Row <= lastRow)
-                    kept.Add(s);
-                else
-                    Drop(s);
+                if (s.Row < firstRow || s.Row > lastRow || !IsAtSlot(s.Item, s, rowTop[s.Row] - shownTop))
+                    ParkItem(front, s.Item);
             }
+            foreach (OwnedSlot o in ownedOnShelf)
+            {
+                int newY = o.AbsY - newTop;
+                if (newY < 0 || newY + o.GlobalHeight > Rows)
+                    ParkItem(front, o.Item);
+            }
+
+            // 2. Shift staying items in-place to their new screen rows (no Expel / no feature rebuild).
+            foreach (Slot s in slots)
+            {
+                if (s.Sold || s.Row < firstRow || s.Row > lastRow || IsDestroyedItem(s.Item) || GeneralHelper.IsItemOwned(s.Item) || !OnFront(s.Item))
+                    continue;
+                MoveOnFront(s.Item, s.X, rowTop[s.Row] - newTop, false, s.Turned ? 1 : 0);
+            }
+            foreach (OwnedSlot o in ownedOnShelf)
+            {
+                int newY = o.AbsY - newTop;
+                if (OnFront(o.Item) && newY >= 0 && newY + o.GlobalHeight <= Rows)
+                    MoveOnFront(o.Item, o.X, newY, o.Flipped, o.Orientation);
+            }
+
+            // 3. Re-enter parked player-owned shelf items whose global rows are now in view (before merchant items).
+            foreach (OwnedSlot o in ownedOnShelf)
+            {
+                int newY = o.AbsY - newTop;
+                if (OnFront(o.Item) || newY < 0 || newY + o.GlobalHeight > Rows)
+                    continue;
+                SetItemVisible(o.Item, true);
+                if (!PutItem(front, o.Item, o.X, newY, o.Flipped, o.Orientation))
+                    SetItemVisible(o.Item, false);
+            }
+
+            // 4. Enter newly visible shop slots (reusing cached off-screen items or creating once).
             foreach (Slot s in slots)
             {
                 if (s.Sold || s.Row < firstRow || s.Row > lastRow)
                     continue;
-                if (s.Item != null && !kept.Contains(s))
+                if (s.Item != null && IsDestroyedItem(s.Item))
+                {
+                    shown.Remove(s.Item);
+                    s.Item = null;
+                }
+                if (s.Item != null && OnFront(s.Item))
+                    continue;
+                // A piece currently placed on the counter top stays there.
+                if (s.Item != null && s.Item.parentInventory != null)
                     continue;
                 if (s.Item == null)
                     s.Item = Make(s);
-                if (s.Item != null && !Put(front, s, rowTop[s.Row] - top))
-                    Drop(s);
+                else
+                    SetItemVisible(s.Item, true);
+                if (s.Item != null && !PutSlot(front, s, rowTop[s.Row] - newTop))
+                    SetItemVisible(s.Item, false);
             }
-            RefreshPanel();
+
+            shownTop = newTop;
+            RefreshShelfHeader();
         }
 
         private static GameItem Make(Slot s)
@@ -375,28 +560,28 @@ namespace GunsmithExpansion
             return item;
         }
 
-        private static void Drop(Slot s)
+        private static bool PutItem(GameGridInventory front, GameItem item, int x, int y, bool flipped, int orientation)
         {
-            if (s.Item == null)
-                return;
-            shown.Remove(s.Item);
-            s.Item.Destroy();
-            s.Item = null;
-        }
-
-        private static bool Put(GameGridInventory front, Slot s, int y)
-        {
-            GameItem item = s.Item;
             GridShape own = item.modifiedShape ?? item.shape;
             if (own == null)
                 return false;
-            GridShape at = new GridShapeBuilder(own).SetTransform(s.X, y, false, s.Turned ? 1 : 0).Build();
+            GridShape at = new GridShapeBuilder(own).SetTransform(x, y, flipped, orientation).Build();
             if (!front.CheckShapePlacement(item, at, new List<GameItem>()))
                 return false;
             var marker = new SlotMarker { item = item, inventory = front, itemGridShape = at, numTransfer = item.unitCount };
             if (marker.TryAcceptOnce(-1) < item.unitCount)
                 return false;
-            LincolnGoods.AddPriceFeatures(item, s.Good, Lincoln.Discount());
+            GameItemElement el = item as GameItemElement;
+            if (el != null)
+                el.UpdateRectTransform();
+            return true;
+        }
+
+        private static bool PutSlot(GameGridInventory front, Slot s, int y)
+        {
+            if (!PutItem(front, s.Item, s.X, y, false, s.Turned ? 1 : 0))
+                return false;
+            LincolnGoods.AddPriceFeatures(s.Item, s.Good, Lincoln.Discount());
             return true;
         }
 
@@ -412,19 +597,46 @@ namespace GunsmithExpansion
             return 0;
         }
 
-        private static void Scroll(int step)
+        private static void ScrollToRow(int target)
         {
-            int next = Math.Max(0, Math.Min(MaxFirstRow(), firstRow + step));
+            int next = Math.Max(0, Math.Min(MaxFirstRow(), target));
             if (next == firstRow)
                 return;
             firstRow = next;
             ShowRows();
         }
 
-        private static bool OverFront()
+        private static void Scroll(int step)
         {
-            EmporiumEntry entry = EmporiumEntry.Instance;
-            RectTransform rect = entry != null && entry.frontInvinvElement != null ? entry.frontInvinvElement.rectTransform : null;
+            ScrollToRow(firstRow + step);
+        }
+
+        private static void PageDown()
+        {
+            if (!here || Dragging() || rowTop.Count == 0)
+                return;
+            int step = Math.Max(1, lastRow - firstRow + 1);
+            ScrollToRow(firstRow + step);
+        }
+
+        private static void PageUp()
+        {
+            if (!here || Dragging() || firstRow <= 0 || rowTop.Count == 0)
+                return;
+            int sum = 0;
+            int target = firstRow - 1;
+            for (int r = firstRow - 1; r >= 0; r--)
+            {
+                if (sum + rowHeight[r] > Rows && r < firstRow - 1)
+                    break;
+                sum += rowHeight[r];
+                target = r;
+            }
+            ScrollToRow(target);
+        }
+
+        private static bool OverRect(RectTransform rect)
+        {
             if (rect == null)
                 return false;
             Canvas canvas = rect.GetComponentInParent<Canvas>();
@@ -432,73 +644,63 @@ namespace GunsmithExpansion
             return RectTransformUtility.RectangleContainsScreenPoint(rect, Input.mousePosition, camera);
         }
 
+        private static bool OverFront()
+        {
+            EmporiumEntry entry = EmporiumEntry.Instance;
+            return entry != null && entry.frontInvinvElement != null && OverRect(entry.frontInvinvElement.rectTransform);
+        }
+
+        private static bool OverTablet()
+        {
+            NegociationUIManager nego = NegociationUIManager.Instance;
+            if (nego == null || !nego.IsOpen)
+                return false;
+            if (CustomUIManager.Instance != null)
+            {
+                CustomUIWindow win = CustomUIManager.Instance.GetWindow(NegociationUIManager.WINDOW_ID);
+                if (win != null && win.IsAlive && win.IsVisible && OverRect(win.Rect))
+                    return true;
+            }
+            if (nego.uiObject != null && nego.uiObject.activeInHierarchy)
+            {
+                RectTransform rt = nego.uiObject.GetComponent<RectTransform>();
+                if (OverRect(rt))
+                    return true;
+            }
+            return false;
+        }
+
         private static bool Dragging()
         {
             return ItemMouseDragHandler.current != null && ItemMouseDragHandler.current.IsDraggingItem;
         }
 
-        private static void BuildPanel(CustomUIBuilder builder)
+        private static bool TypingInInput()
         {
-            builder.AddLabel(Lincoln.StatusLine(), StatusLabel);
-            builder.AddLabel(RowsText(), ScrollLabel);
-            builder.AddButton(LocHelper.GetLocalizedUI("inte_tablet_hover", new object[0]), () =>
-            {
-                if (NegociationUIManager.Instance != null)
-                    NegociationUIManager.Instance.ToggleUI();
-            }, TabletButton);
-            panel = builder.Handle;
-        }
-
-        private static float FitLabel(CustomUIElement el)
-        {
-            if (el == null || el.text == null)
-                return 48f;
-            el.text.enableWordWrapping = true;
-            float h = Mathf.Ceil(el.text.GetPreferredValues(el.text.text ?? "", 360f, 0f).y) + 6f;
-            if (h < 48f)
-                h = 48f;
-            el.SetPreferredSize(0f, h);
-            return h;
-        }
-
-        private static void FitPanel()
-        {
-            if (panel == null || !panel.IsAlive)
-                return;
-            float h1 = FitLabel(panel.Get(StatusLabel));
-            float h2 = FitLabel(panel.Get(ScrollLabel));
-            float width = panel.Rect != null && panel.Rect.sizeDelta.x > 0f ? panel.Rect.sizeDelta.x : 400f;
-            panel.SetSize(width, Mathf.Max(272f, 164f + h1 + h2));
+            EventSystem es = EventSystem.current;
+            GameObject selected = es != null ? es.currentSelectedGameObject : null;
+            if (selected == null)
+                return false;
+            TMP_InputField tmp = selected.GetComponent<TMP_InputField>();
+            if (tmp != null && tmp.isFocused)
+                return true;
+            InputField legacy = selected.GetComponent<InputField>();
+            return legacy != null && legacy.isFocused;
         }
 
         private static string RowsText()
         {
             int rows = rowTop.Count;
-            if (rows == 0)
-                return Text.Pick("今天的货已经卖完了。", "Everything is sold out for today.");
-            return string.Format(Text.Pick("在前柜台上滚动鼠标滚轮可以翻看其余货物：第 {0} 至 {1} 排，共 {2} 排。",
-                "Scroll the mouse wheel over the front counter to see the other goods: rows {0} to {1} of {2}."),
-                firstRow + 1, Math.Max(firstRow + 1, lastRow + 1), rows);
+            int first = rows > 0 ? firstRow + 1 : 0;
+            int last = rows > 0 ? Math.Max(first, lastRow + 1) : 0;
+            return string.Format(Text.Pick("货架 ({0}-{1} / {2}排)", "Shelf ({0}-{1} / {2} rows)"), first, last, rows);
         }
 
-        private static void RefreshPanel()
+        private static void RefreshShelfHeader()
         {
-            try
-            {
-                if (panel == null || !panel.IsAlive)
-                    return;
-                CustomUIElement status = panel.Get(StatusLabel);
-                if (status != null)
-                    status.SetText(Lincoln.StatusLine());
-                CustomUIElement rows = panel.Get(ScrollLabel);
-                if (rows != null)
-                    rows.SetText(RowsText());
-                FitPanel();
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("Lincoln Arms panel: " + e.Message);
-            }
+            if (!here)
+                return;
+            LincolnShelfHeader.Refresh(RowsText(), firstRow > 0, firstRow < MaxFirstRow());
         }
 
         // Placing an item on the front counter clears temporary client features before the client's callback runs
@@ -515,9 +717,18 @@ namespace GunsmithExpansion
         private static void OnWeighted(GameItem item)
         {
             Slot s;
-            if (item == null || !shown.TryGetValue(item, out s) || GeneralHelper.IsItemOwned(item))
+            if (!here || item == null || !shown.TryGetValue(item, out s) || GeneralHelper.IsItemOwned(item))
                 return;
             LincolnGoods.AddPriceFeatures(item, s.Good, Lincoln.Discount());
+            // Opening the tablet is independent of the eight-second dialogue cooldown.
+            NegociationUIManager nego = NegociationUIManager.Instance;
+            if (nego != null)
+            {
+                if (nego.IsOpen)
+                    nego.RefreshUI();
+                else
+                    nego.OpenUI();
+            }
             float now = Time.time;
             if (now - lastComment < CommentPause)
                 return;
@@ -563,11 +774,11 @@ namespace GunsmithExpansion
             {
                 // without a daily limit (the material packs): another one in its place
                 EmporiumEntry entry = EmporiumEntry.Instance;
-                if (entry != null && s.Row >= firstRow && s.Row <= lastRow)
+                if (entry != null && entry.frontInvinvElement != null && s.Row >= firstRow && s.Row <= lastRow)
                 {
                     s.Item = Make(s);
-                    if (s.Item != null && !Put(entry.frontInvinvElement, s, rowTop[s.Row] - rowTop[firstRow]))
-                        Drop(s);
+                    if (s.Item != null && !PutSlot(entry.frontInvinvElement, s, rowTop[s.Row] - shownTop))
+                        SetItemVisible(s.Item, false);
                 }
             }
             else
@@ -578,7 +789,7 @@ namespace GunsmithExpansion
             pending.Clear();
             Say(lines.Paid.Get());
             pending.Add(new KeyValuePair<float, string>(now + ByeDelay, lines.Bye.Get()));
-            RefreshPanel();
+            RefreshShelfHeader();
             GunsmithMod.Log("bought at Lincoln Arms: " + s.Good.Key + " for " + cost);
         }
 
@@ -590,6 +801,8 @@ namespace GunsmithExpansion
             {
                 float now = Time.time;
                 MapUIManager map = MapUIManager.Instance;
+                LincolnShelfHeader.Tick();
+                LincolnVisitUI.Tick();
                 if (!greeted)
                 {
                     if (map != null && map.IsInTransit)
@@ -602,9 +815,19 @@ namespace GunsmithExpansion
                         Greet();
                     }
                 }
-                float wheel = Input.mouseScrollDelta.y;
-                if (wheel != 0 && !Dragging() && OverFront())
-                    Scroll(wheel > 0 ? -1 : 1);
+                if (!Dragging())
+                {
+                    float wheel = Input.mouseScrollDelta.y;
+                    if (wheel != 0 && (OverFront() || LincolnShelfHeader.Over()) && !OverTablet())
+                        Scroll(wheel > 0 ? -1 : 1);
+                    else if (!TypingInInput())
+                    {
+                        if (Input.GetKeyDown(KeyCode.PageUp))
+                            PageUp();
+                        else if (Input.GetKeyDown(KeyCode.PageDown))
+                            PageDown();
+                    }
+                }
                 if (pending.Count > 0 && now >= pending[0].Key)
                 {
                     string text = pending[0].Value;
@@ -699,6 +922,7 @@ namespace GunsmithExpansion
             if (ui == null || PlayerStore.Instance == null || PlayerStore.Instance.currentClientInstance == null || string.IsNullOrEmpty(text))
                 return 0;
             ui.PlayClientSingleText(text);
+            LincolnVisitUI.AfterSay();
             float seconds = LineSeconds();
             lastLine = Time.time;
             hideAt = lastLine + seconds;
@@ -731,6 +955,17 @@ namespace GunsmithExpansion
             {
                 GunsmithMod.Warn("bought at Lincoln Arms: " + e.Message);
             }
+        }
+    }
+
+    // With ClientIntent.SELL, StoreClient.OnDealAccepted triggers vanilla post-deal / all-done leave dialogues that would overwrite
+    // Lincoln Arms' own paid and farewell lines or dismiss the dealer when a page is emptied; skip it while at Lincoln Arms.
+    [HarmonyPatch(typeof(StoreClient), nameof(StoreClient.OnDealAccepted))]
+    internal static class LincolnShopDealAcceptedPatch
+    {
+        private static bool Prefix(StoreClient __instance)
+        {
+            return !(LincolnShop.Here() && __instance != null && __instance.identifier == LincolnShop.DealerId);
         }
     }
 }

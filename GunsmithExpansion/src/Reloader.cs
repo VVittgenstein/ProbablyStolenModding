@@ -213,9 +213,10 @@ namespace GunsmithExpansion
     [HarmonyPatch(typeof(StoreClientList), nameof(StoreClientList.CreateLowerLevelChemist), new[] { typeof(bool) })]
     internal static class ReloaderChemistPatch
     {
-        private static void Postfix(StoreClient __result)
+        private static void Postfix(bool carryContraband, StoreClient __result)
         {
-            Reloader.StockChemist(__result);
+            if (!carryContraband)
+                Reloader.StockChemist(__result);
         }
     }
 }
