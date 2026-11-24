@@ -12,13 +12,17 @@ namespace GunsmithExpansion
     {
         internal readonly int Cols;
         internal readonly int Rows;
+        internal readonly int TrimTop;
+        internal readonly int TrimBottom;
         internal readonly string Mask;
         internal readonly byte[] Data;
 
-        internal ShapeDef(int cols, int rows, string mask)
+        internal ShapeDef(int cols, int rows, string mask, int trimTop = 0, int trimBottom = 0)
         {
             Cols = cols;
             Rows = rows;
+            TrimTop = trimTop;
+            TrimBottom = trimBottom;
             Mask = mask ?? "";
             Data = new byte[Math.Max(0, cols * rows)];
             int len = Math.Min(Mask.Length, Data.Length);
@@ -93,6 +97,14 @@ namespace GunsmithExpansion
                 && def != null
                 && def.Cols > 0
                 && def.Rows > 0;
+        }
+
+        internal static int GetTrimTop(GameItem item)
+        {
+            if (item == null || !item.useSpriteFromMod || !IsManagedMod(item.spriteAtlasPath))
+                return 0;
+            string key = !string.IsNullOrEmpty(item.spritePath) ? item.spritePath : item.identifier;
+            return TryGet(key, out ShapeDef def) ? def.TrimTop : 0;
         }
 
         // Zero-instantiation cell bounding-box lookup for item IDs and sprite keys (e.g. LincolnGoods shelf layout).
@@ -904,7 +916,7 @@ namespace GunsmithExpansion
             Rect r = sprite.rect;
             int cols = (int)r.width / gs;
             int rows = (int)r.height / gs;
-            return cols == def.Cols && rows == def.Rows;
+            return cols == def.Cols && rows == def.Rows + def.TrimTop + def.TrimBottom;
         }
 
         private static void WarnSizeMismatchOnce(string modId, string spriteKey, Sprite sprite, ShapeDef def)
@@ -916,7 +928,7 @@ namespace GunsmithExpansion
             Rect r = sprite.rect;
             GunsmithMod.Warn("ItemShapes: sprite '" + token + "' is "
                 + ((int)r.width / gs) + "x" + ((int)r.height / gs)
-                + " cells, but ShapeDef expects " + def.Cols + "x" + def.Rows
+                + " cells, expected sprite size " + def.Cols + "x" + (def.Rows + def.TrimTop + def.TrimBottom)
                 + "; falling back to sprite sampling");
         }
 

@@ -183,6 +183,8 @@ namespace GunsmithExpansion
             if (!Place(id, slot, parent, out sprite, out topLeft, out box))
                 return null;
 
+            int trimTopPx = ItemShapes.GetTrimTop(parent) * Cell;
+            int gridTopY = topLeft.y - trimTopPx;
             int minCx, maxCx, minCy, maxCy;
             byte[] mask;
             int w, h;
@@ -198,8 +200,8 @@ namespace GunsmithExpansion
                 {
                     int bcx0 = Floor(topLeft.x + spans[i + 2]);
                     int bcx1 = Floor(topLeft.x + spans[i + 3]);
-                    int bcy0 = Floor(topLeft.y + spans[i]);
-                    int bcy1 = Floor(topLeft.y + spans[i + 1]);
+                    int bcy0 = Floor(gridTopY + spans[i]);
+                    int bcy1 = Floor(gridTopY + spans[i + 1]);
                     if (bcx0 < minCx) minCx = bcx0;
                     if (bcx1 > maxCx) maxCx = bcx1;
                     if (bcy0 < minCy) minCy = bcy0;
@@ -215,8 +217,8 @@ namespace GunsmithExpansion
                 {
                     int bcx0 = Floor(topLeft.x + spans[i + 2]);
                     int bcx1 = Floor(topLeft.x + spans[i + 3]);
-                    int bcy0 = Floor(topLeft.y + spans[i]);
-                    int bcy1 = Floor(topLeft.y + spans[i + 1]);
+                    int bcy0 = Floor(gridTopY + spans[i]);
+                    int bcy1 = Floor(gridTopY + spans[i + 1]);
                     for (int cy = bcy0; cy <= bcy1; cy++)
                     {
                         int rowOffset = (cy - minCy) * w;
@@ -229,8 +231,8 @@ namespace GunsmithExpansion
             {
                 minCx = Floor(topLeft.x + box.X0);
                 maxCx = Floor(topLeft.x + box.X1 - 1);
-                minCy = Floor(topLeft.y + box.Y0);
-                maxCy = Floor(topLeft.y + box.Y1 - 1);
+                minCy = Floor(gridTopY + box.Y0);
+                maxCy = Floor(gridTopY + box.Y1 - 1);
                 if (maxCx < minCx || maxCy < minCy)
                     return null;
                 w = maxCx - minCx + 1;

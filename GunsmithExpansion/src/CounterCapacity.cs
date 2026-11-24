@@ -5,122 +5,23 @@ using UnityEngine;
 
 namespace GunsmithExpansion
 {
-    // Expands the store back counters (backInvinvElement and backInvinvElementCounter) from vanilla 18x4 to 20x7 and
-    // Store-mode frontInvinvElement from 18x4 to 20x5 so every fully kitted gun (exhaustive worst case across 109 mod
-    // guns + 6 vanilla guns: 19x5 widest on gse_w131/gse_w124, 14x7 tallest on gse_w116) fits on the counter for
-    // trading, repair hand-in, customer delivery and afterhour trading at Lincoln Arms and Dr. Jackson.
-    //
-    // Layout invariants verified across all 7 EmporiumEntry.UpdateScaleFactor resolutions (960x540 .. 3840x2160):
-    //   - Classic PixelWindow size is 324x116 px for 20x7 and 324x84 px for 20x5 (16 px/cell + 4 px border).
-    //   - Store mode: backInvWindow (20x7) keeps its bottom edge at vanilla's exact counter lip (-((ch/100)*52.2) - 68,
-    //     i.e. -329 px at 537..540) so the [Accept / Dismiss / Bell] counter buttons at [-335..-356] and invWindow at
-    //     -365 remain completely uncovered; frontInvWindow (20x5) stacks directly above backInvWindow at [-129..-213],
-    //     clearing vendingFountainWindow (-126.5), vendingMachineWindow (-127), showcaseWindow II, docInvWindow and
-    //     trashInvWindow with 0 overlap (Supply and RepairOrders also fall back to 20x7 backInvinvElement if needed).
-    //   - Afterhour counter locations (Lincoln Arms and Dr. Jackson, ShowsStoreCounters == true): frontInvinvElement
-    //     keeps its 14x21 shelf (ExpandFrontCounterGrid); backInvWindow sits between Lincoln's ledgerTablet
-    //     (X_max = 368.5 scaled) and frontInvWindow (X_min = frontX) with bottom at afterhourTop + 4 px, clearing
-    //     ledgerTablet, dealerTablet, Dr. Jackson's sheetTablet, frontInvWindow, LincolnShelfHeader and afterhourWindow
-    //     with 0 overlap.
-    //   - Save/load safety: counters are resized before PlayerStore.LoadGame decodes backInvJSON, so both old saves
-    //     (items within 18x4) and new saves (items anywhere in 20x7) load cleanly; backInvinvElementCounter matches
-    //     backInvinvElement so TransferBackInvToCounter / TransferCounterToBackInv preserve all positions.
-    internal static class CounterCapacity
+    internal static partial class CounterCapacity
     {
-        internal const int CounterWidth = 20;
-        internal const int CounterHeight = 7;
-        internal const int StoreFrontCounterHeight = 5;
+        private const string SettingsSection = "Counter";
+        private const string SettingKey = "auto_expand_counter";
+        private static ConfigEntry<bool> expandEntry;
 
-        private const int VanillaBackWindowHeightPx = 68;
-        private const float AfterhourBottomGapPx = 4f;
-        private const float AfterhourFrontGapPx = 8f;
-        private const float LincolnLedgerGapPx = 5f;
-        private const float LincolnLedgerRightAt960 = 368.5f;
-        private const int DefaultAfterhourWindowHeightPx = 173;
+        internal static bool Enabled { get { return expandEntry == null || expandEntry.Value; } }
 
-        internal static bool IsInAfterhourCounterLocation()
+        internal static void DefineSettings()
         {
-            MapUIManager map = MapUIManager.Instance;
-            return map != null && map.Current != null && map.Current.ShowsStoreCounters;
-        }
-
-        internal static bool EnsureGridSize(GameGridInventory inv, PixelWindow win, int width, int height)
-        {
-            if (inv == null)
-                return false;
-            GridShape shape = inv.inventoryShape;
-            if (shape != null && shape.width == width && shape.height == height)
-                return false;
-            inv.SetShape(width, height);
-            inv.Validate();
-            if (win != null)
-                win.Validate();
-            return true;
-        }
-
-        internal static void EnsureStoreCounters(EmporiumEntry entry, bool includeFront)
-        {
-            if (entry == null)
-                return;
-            EnsureGridSize(entry.backInvinvElement, entry.backInvWindow, CounterWidth, CounterHeight);
-            EnsureGridSize(entry.backInvinvElementCounter, null, CounterWidth, CounterHeight);
-            if (includeFront && !IsInAfterhourCounterLocation())
-                EnsureGridSize(entry.frontInvinvElement, entry.frontInvWindow, CounterWidth, StoreFrontCounterHeight);
-        }
-
-        internal static Vector2 ComputeStoreBackPosition(EmporiumEntry entry, int canvasWidth, int canvasHeight)
-        {
-            PixelWindow backWin = entry != null ? entry.backInvWindow : null;
-            int backW = backWin != null && backWin.widthPixels > 0 ? backWin.widthPixels : CounterWidth * 16 + 4;
-            int backH = backWin != null && backWin.heightPixels > 0 ? backWin.heightPixels : CounterHeight * 16 + 4;
-            float x = (canvasWidth / 2) - (backW / 2);
-            float vanillaTop = -((canvasHeight / 100) * 52.2f);
-            float vanillaBottom = vanillaTop - VanillaBackWindowHeightPx;
-            float y = vanillaBottom + backH;
-            if (y > 0f)
-                y = 0f;
-            return new Vector2(x, y);
-        }
-
-        internal static Vector2 ComputeAfterhourBackPosition(
-            EmporiumEntry entry,
-            AfterhourLocation location,
-            int canvasWidth,
-            int canvasHeight)
-        {
-            PixelWindow backWin = entry != null ? entry.backInvWindow : null;
-            int backW = backWin != null && backWin.widthPixels > 0 ? backWin.widthPixels : CounterWidth * 16 + 4;
-            int backH = backWin != null && backWin.heightPixels > 0 ? backWin.heightPixels : CounterHeight * 16 + 4;
-
-            Vector2? frontPos = location != null ? location.GetFrontCounterPosition(canvasWidth, canvasHeight) : null;
-            float frontX = frontPos.HasValue ? frontPos.Value.x : (canvasWidth / 100) * 78.5f;
-            float ledgerRight = (canvasWidth / 960f) * LincolnLedgerRightAt960;
-            float minX = ledgerRight + LincolnLedgerGapPx;
-            float maxX = frontX - AfterhourFrontGapPx - backW;
-            float x = minX <= maxX ? (minX + maxX) * 0.5f : Math.Max(0f, maxX);
-
-            int afterhourH = entry != null && entry.afterhourWindow != null && entry.afterhourWindow.heightPixels > 0
-                ? entry.afterhourWindow.heightPixels
-                : DefaultAfterhourWindowHeightPx;
-            float afterhourTop = -(canvasHeight - afterhourH);
-            float y = afterhourTop + AfterhourBottomGapPx + backH;
-            if (y > 0f)
-                y = 0f;
-            return new Vector2(x, y);
-        }
-
-        internal static Vector2 ComputeStoreFrontPosition(EmporiumEntry entry)
-        {
-            PixelWindow backWin = entry != null ? entry.backInvWindow : null;
-            PixelWindow frontWin = entry != null ? entry.frontInvWindow : null;
-            if (backWin == null || backWin.rectTransform == null)
-                return Vector2.zero;
-            Vector2 backPos = backWin.rectTransform.anchoredPosition;
-            int frontH = frontWin != null && frontWin.heightPixels > 0 ? frontWin.heightPixels : StoreFrontCounterHeight * 16 + 4;
-            float y = backPos.y + frontH;
-            if (y > 0f)
-                y = 0f;
-            return new Vector2(backPos.x, y);
+            ModConfig config = ModHelper.GetConfig(GunsmithMod.ModId);
+            if (config == null) return;
+            expandEntry = config.Define(SettingKey, true, SettingsSection,
+                () => Text.Pick("自动扩展后柜台", "Automatically expand the back counter"),
+                () => Text.Pick("在店内和夜访时，后柜台会为超大物品临时扩大。移走大件后，剩余物品能放回原区域时，柜台会缩回。",
+                    "In the shop and during night visits, the back counter expands for oversized items. Once they are removed, it shrinks if the remaining items fit in the original area."));
+            config.Save();
         }
 
         // Old-save guard for vanilla guns (Mounts.Guns where Vanilla == true) wearing mod attachments whose top-mounted
@@ -239,23 +140,6 @@ namespace GunsmithExpansion
                 }
             }
             return false;
-        }
-
-        private static bool ShapesLocalEqual(GridShape a, GridShape b)
-        {
-            if (ReferenceEquals(a, b))
-                return true;
-            if (a == null || b == null || a.width != b.width || a.height != b.height)
-                return false;
-            for (int y = 0; y < a.height; y++)
-            {
-                for (int x = 0; x < a.width; x++)
-                {
-                    if (a.GetLocal(x, y) != b.GetLocal(x, y))
-                        return false;
-                }
-            }
-            return true;
         }
 
         private static bool IsGridInventory(GameInventory inv)
@@ -382,177 +266,10 @@ namespace GunsmithExpansion
         }
     }
 
-    // Runs inside EmporiumEntry.Start right after frontInvinvElement, backInvinvElement and backInvinvElementCounter
-    // are instantiated and BEFORE PlayerStore.LoadGame decodes backInvJSON.
-    [HarmonyPatch(typeof(EmporiumEntry), "SetupAfterhourInv")]
-    internal static class CounterSetupAfterhourInvPatch
-    {
-        private static void Postfix(EmporiumEntry __instance)
-        {
-            try
-            {
-                CounterCapacity.EnsureStoreCounters(__instance, true);
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity SetupAfterhourInv: " + e.Message);
-            }
-        }
-    }
-
-    // Ensures counter grids are 20x7 before PlayerStore.LoadGame decodes backInvJSON even on reload paths that do not
-    // recreate EmporiumEntry.
-    [HarmonyPatch(typeof(PlayerStore), "LoadGame")]
-    internal static class CounterLoadGamePrefixPatch
-    {
-        private static void Prefix()
-        {
-            try
-            {
-                CounterCapacity.EnsureStoreCounters(EmporiumEntry.Instance, !CounterCapacity.IsInAfterhourCounterLocation());
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity LoadGame Prefix: " + e.Message);
-            }
-        }
-    }
-
-    // Re-verifies counter dimensions and positions at the end of EmporiumEntry.Start.
-    [HarmonyPatch(typeof(EmporiumEntry), "Start")]
-    internal static class CounterEmporiumStartPatch
-    {
-        private static void Postfix(EmporiumEntry __instance)
-        {
-            try
-            {
-                CounterCapacity.EnsureStoreCounters(__instance, true);
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity Start: " + e.Message);
-            }
-        }
-    }
-
-    // Restores Store-mode front counter to 20x5 (instead of vanilla 18x4) when leaving Lincoln Arms or Dr. Jackson.
-    [HarmonyPatch(typeof(EmporiumEntry), "ResetFrontCounterGrid")]
-    internal static class CounterResetFrontGridPatch
-    {
-        private static void Postfix(EmporiumEntry __instance)
-        {
-            try
-            {
-                if (__instance == null)
-                    return;
-                CounterCapacity.EnsureGridSize(
-                    __instance.frontInvinvElement,
-                    __instance.frontInvWindow,
-                    CounterCapacity.CounterWidth,
-                    CounterCapacity.StoreFrontCounterHeight);
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity ResetFrontCounterGrid: " + e.Message);
-            }
-        }
-    }
-
-    // Calibrates backInvWindow anchoredPosition for 20x7 in both Store mode and afterhour counter locations
-    // (Lincoln Arms and Dr. Jackson).
-    [HarmonyPatch(typeof(EmporiumEntry), "GetBackInvPosition", new[] { typeof(int), typeof(int) })]
-    internal static class CounterGetBackInvPositionPatch
-    {
-        private static void Postfix(EmporiumEntry __instance, int newCanvasWidth, int newCanvasHeight, ref Vector2 __result)
-        {
-            try
-            {
-                if (__instance == null)
-                    return;
-                CounterCapacity.EnsureGridSize(
-                    __instance.backInvinvElement,
-                    __instance.backInvWindow,
-                    CounterCapacity.CounterWidth,
-                    CounterCapacity.CounterHeight);
-                CounterCapacity.EnsureGridSize(
-                    __instance.backInvinvElementCounter,
-                    null,
-                    CounterCapacity.CounterWidth,
-                    CounterCapacity.CounterHeight);
-
-                AfterhourLocation current = MapUIManager.Instance != null ? MapUIManager.Instance.Current : null;
-                bool hasAfterhourBack = current != null
-                    && current.GetBackCounterPosition(newCanvasWidth, newCanvasHeight).HasValue;
-
-                __result = hasAfterhourBack
-                    ? CounterCapacity.ComputeAfterhourBackPosition(__instance, current, newCanvasWidth, newCanvasHeight)
-                    : CounterCapacity.ComputeStoreBackPosition(__instance, newCanvasWidth, newCanvasHeight);
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity GetBackInvPosition: " + e.Message);
-            }
-        }
-    }
-
-    // Keeps Store-mode frontInvWindow stacked cleanly above backInvWindow with clamped top edge; preserves afterhour
-    // counter shelf positions untouched.
-    [HarmonyPatch(typeof(EmporiumEntry), "GetFrontInvPosition", new[] { typeof(int), typeof(int) })]
-    internal static class CounterGetFrontInvPositionPatch
-    {
-        private static void Postfix(EmporiumEntry __instance, int newCanvasWidth, int newCanvasHeight, ref Vector2 __result)
-        {
-            try
-            {
-                if (__instance == null)
-                    return;
-                AfterhourLocation current = MapUIManager.Instance != null ? MapUIManager.Instance.Current : null;
-                if (current != null && current.GetFrontCounterPosition(newCanvasWidth, newCanvasHeight).HasValue)
-                    return;
-                CounterCapacity.EnsureGridSize(
-                    __instance.frontInvinvElement,
-                    __instance.frontInvWindow,
-                    CounterCapacity.CounterWidth,
-                    CounterCapacity.StoreFrontCounterHeight);
-                __result = CounterCapacity.ComputeStoreFrontPosition(__instance);
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity GetFrontInvPosition: " + e.Message);
-            }
-        }
-    }
-
-    // Ensures Store-mode frontInvWindow has validated 20x5 heightPixels and non-overlapping position whenever shown.
-    [HarmonyPatch(typeof(EmporiumEntry), "ShowFrontWindow")]
-    internal static class CounterShowFrontWindowPatch
-    {
-        private static void Postfix(EmporiumEntry __instance)
-        {
-            try
-            {
-                if (__instance == null || CounterCapacity.IsInAfterhourCounterLocation())
-                    return;
-                CounterCapacity.EnsureGridSize(
-                    __instance.frontInvinvElement,
-                    __instance.frontInvWindow,
-                    CounterCapacity.CounterWidth,
-                    CounterCapacity.StoreFrontCounterHeight);
-                if (__instance.frontInvWindow != null && __instance.frontInvWindow.rectTransform != null)
-                    __instance.frontInvWindow.rectTransform.anchoredPosition = CounterCapacity.ComputeStoreFrontPosition(__instance);
-            }
-            catch (Exception e)
-            {
-                GunsmithMod.Warn("CounterCapacity ShowFrontWindow: " + e.Message);
-            }
-        }
-    }
-
-    // Runs after ModHook.OnGameLoadedLate (including ItemShapes.OnGameLoaded) to align vanilla guns carrying mod
-    // attachments whose shape now extends above the top of the gun (cy < 0).
     [HarmonyPatch(typeof(ModHook), "FireOnGameLoadedLate")]
     internal static class CounterVanillaGunLoadAlignPatch
     {
+        [HarmonyPriority(Priority.Last)]
         private static void Postfix()
         {
             try
@@ -561,8 +278,9 @@ namespace GunsmithExpansion
             }
             catch (Exception e)
             {
-                GunsmithMod.Warn("CounterCapacity AlignVanillaGunsAfterLoad: " + e.Message);
+                GunsmithMod.Warn("Counter load alignment: " + e.Message);
             }
+            finally { CounterCapacity.FinishLoad(); }
         }
     }
 }

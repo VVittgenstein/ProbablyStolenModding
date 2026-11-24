@@ -183,16 +183,19 @@ namespace GunsmithExpansion
             return Mathf.Min(100, AttractionPercent[rank - 1] * (2 + missed) / 2);
         }
 
-        // In the place of the game's appraisal customer, which ShowcaseHelper.GetDisplayCasePrediction adds just before the firearm signs' sellers: the game rolls the
-        // predictions in order and stops at the day's number of customers (StoreClientManager.HandleNormalClient), so a prediction at the end of the list is not rolled
-        // on the days the ones before it fill that number (VVittgenstein 2026-11-07 20:06, current/T-006 quote 20; until then it was added at the end).
         internal static void AddPrediction(List<ValueTuple<string, int, string>> prediction)
         {
             string certificateId = DisplayedCertificateId();
-            // with nothing in the store to repair with he does not come (item 9)
             if (certificateId == null || Rank() <= 0 || Repair.RepairableNow().Count == 0)
                 return;
-            var entry = new ValueTuple<string, int, string>(ClientId, Chance(), certificateId);
+            int chance = Chance();
+            var entry = new ValueTuple<string, int, string>(ClientId, chance, certificateId);
+            // HandleNormalClient tests predictions in order until the day's regular slots are full.
+            if (chance >= 100)
+            {
+                prediction.Insert(0, entry);
+                return;
+            }
             int at = prediction.FindIndex(p => p.Item3 == ShowcaseHelper.SIGN_FIREARM || p.Item3 == ShowcaseHelper.SIGN_FIREARM_HEAVY);
             if (at < 0)
                 prediction.Add(entry);
@@ -202,9 +205,36 @@ namespace GunsmithExpansion
 
         internal static void OnRolled(List<ValueTuple<string, int, string>> prediction, HashSet<string> spawnedIds)
         {
-            if (prediction == null || !prediction.Exists(p => p.Item1 == ClientId))
+            if (prediction == null)
                 return;
-            int missed = spawnedIds != null && spawnedIds.Contains(ClientId) ? 0 : ModHelper.GetModDataInt(GunsmithMod.ModId, MissedKey, 0) + 1;
+            var entry = prediction.Find(p => p.Item1 == ClientId);
+            if (entry.Item1 == null)
+                return;
+
+            bool spawned = spawnedIds != null && spawnedIds.Contains(ClientId);
+            if (!spawned && entry.Item2 >= 100)
+            {
+                // With zero regular slots the game skips every roll and still calls OnCustomerRolled.
+                PlayerStore store = PlayerStore.Instance;
+                StoreClientManager manager = store != null ? store.storeClientManager : null;
+                if (manager != null && manager.clientStack != null)
+                {
+                    spawned = manager.clientStack.Exists(c => c != null && c.identifier == ClientId);
+                    if (!spawned)
+                    {
+                        StoreClient client = StoreClientListDict.CreateStoreClient(ClientId);
+                        if (client != null && client.identifier == ClientId)
+                        {
+                            client.attractedItemId = entry.Item3;
+                            manager.AddClient(client);
+                            spawned = manager.clientStack.Contains(client);
+                        }
+                    }
+                    if (spawned && spawnedIds != null)
+                        spawnedIds.Add(ClientId);
+                }
+            }
+            int missed = spawned ? 0 : ModHelper.GetModDataInt(GunsmithMod.ModId, MissedKey, 0) + 1;
             ModHelper.SetModDataInt(GunsmithMod.ModId, MissedKey, missed);
         }
 
@@ -233,7 +263,11 @@ namespace GunsmithExpansion
             {
                 GunsmithMod.Warn("repair customer not created: " + e.Message);
             }
-            return client ?? Reservations.Nobody();
+            if (client != null)
+                return client;
+            // HandleNormalClient credits the predicted ID for any non-null result, including a placeholder.
+            // Leave a failed guaranteed roll open for OnRolled to retry.
+            return Chance() >= 100 ? null : Reservations.Nobody();
         }
 
         internal static void OnRepairAccepted(GunOrderData order)
@@ -527,6 +561,25 @@ namespace GunsmithExpansion
                 Lines.Add(builder, "", Text.Chinese()
                     ? string.Format("每天没有修枪顾客上门，几率都会提高，基础为{0}%", AttractionPercent[level - 1])
                     : LocHelper.GetLocalizedMechanicOrDefault("mech_appraisal_cert_chance_ramp", "Rises every day without one, from {0}%", AttractionPercent[level - 1]), info);
+            if (own && chance >= 100)
+                Lines.Add(builder, "", Text.Pick(
+                    "已达100%。证书直接放在展示柜内且店里有可用的维修工具或耗材时，即使武器许可证或灯牌占满普通顾客名额，次日开店也必有一位修枪顾客入队。",
+                    "At 100%, display the certificate directly in the case and stock a repair tool or supply. One repair customer will join tomorrow's queue even if weapon permits or signs fill every regular slot."), RenderHandler.ColorPalette.LightGreen);
+            else
+                Lines.Add(builder, "", Text.Pick(
+                    "普通顾客每天按预测顺序抽取。未满100%时，排在前面的武器许可证或灯牌可能占满名额。证书直接展示且店内有维修用品时，达到100%后次日必有修枪顾客入队。",
+                    "Regular customers are chosen in forecast order. Below 100%, weapon permits or signs can fill every slot first. At 100%, a displayed certificate and repair supplies guarantee a repair customer in tomorrow's queue."), info);
+            if (own && EmporiumEntry.Instance != null)
+            {
+                if (DisplayedCertificateId() == null)
+                    Lines.Add(builder, "", Text.Pick(
+                        "当前未展示维修证书。请将证书直接放入展示柜，才能招来修枪顾客。",
+                        "No repair certificate is on display. Place it directly in the display case to attract a repair customer."), RenderHandler.ColorPalette.LightRed);
+                if (Repair.RepairableNow().Count == 0)
+                    Lines.Add(builder, "", Text.Pick(
+                        "店内缺少可用的维修工具或耗材，暂时无法招来修枪顾客。备好螺丝刀、剪线钳、等离子切割机、医用酒精（或可替代的清洗液）、有剩余耐久度的韧棉织物、枪械零件或3D打印耗材中的任意一种即可。",
+                        "No usable repair tools or supplies. To attract a repair customer, stock a screwdriver, wire cutter, plasma cutter, rubbing alcohol (or a suitable solvent), usable kotton fabric, gun parts or 3D printing filament."), RenderHandler.ColorPalette.LightRed);
+            }
             if (RefurbishBonus[level - 1] > 0)
                 Lines.Add(builder, "", string.Format(Text.Pick("用枪械零件翻新的成功率：+{0}%", "Refurbishing with gun parts: +{0}% chance"),
                     RefurbishBonus[level - 1]), info);

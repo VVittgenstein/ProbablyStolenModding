@@ -10,7 +10,7 @@ namespace GunsmithExpansion
     // Vanilla placed background at (+modifiedXOrigin * gridSize, +modifiedYOrigin * gridSize) instead of
     // (+modifiedXOrigin * gridSize, -modifiedYOrigin * gridSize), shifting guns with top-mounted attachments (cy < 0,
     // modifiedYOrigin > 0) upward by 2 * modifiedYOrigin * gridSize in local space across all 8 (orientation, flipped)
-    // states and during drag preview.
+    // states and during drag preview. A removed top grid row also places the native sprite one row above the base shape.
     //
     // Because UpdateModSprite and UpdateInnateModSprite position active spriteMods, fakeSpriteMods, innateSpriteMods
     // and innateFakeSpriteMods relative to background.rectTransform.anchoredPosition during ValidateSelectLocked, this
@@ -28,7 +28,8 @@ namespace GunsmithExpansion
         {
             try
             {
-                if (__instance == null || __instance.modifiedYOrigin == 0 || UISettings.current == null)
+                int trimTop = ItemShapes.GetTrimTop(__instance);
+                if (__instance == null || (__instance.modifiedYOrigin == 0 && trimTop == 0) || UISettings.current == null)
                     return;
 
                 TreeNodeRender bg = __instance.background;
@@ -40,7 +41,7 @@ namespace GunsmithExpansion
                     return;
 
                 Vector2 bgPos = bg.rectTransform.anchoredPosition;
-                float expectedY = -__instance.modifiedYOrigin * gridSize;
+                float expectedY = (-__instance.modifiedYOrigin + trimTop) * gridSize;
                 float deltaY = expectedY - bgPos.y;
                 if (Mathf.Approximately(deltaY, 0f))
                     return;

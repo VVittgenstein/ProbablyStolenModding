@@ -1,5 +1,5 @@
 [assembly: System.Reflection.AssemblyTitle("GunsmithExpansion")]
-[assembly: System.Reflection.AssemblyVersion("0.8.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.8.2.0")]
 
 namespace GunsmithExpansion
 {
@@ -9,7 +9,7 @@ namespace GunsmithExpansion
     {
         internal const string ModId = "GunsmithExpansion";
         internal const string LogPrefix = "[GunsmithExpansion] ";
-        internal static string Version = "0.8.1";
+        internal static string Version = "0.8.2";
 
         public void Init(ModManifest manifest)
         {
@@ -48,6 +48,7 @@ namespace GunsmithExpansion
             Cabinets.DefineSettings();
             AddOn2077.DefineSettings();
             StarterRecovery.DefineSettings();
+            CounterCapacity.DefineSettings();
             Phone.Register();
             LincolnPhone.Register();
             LincolnVisits.Register();
