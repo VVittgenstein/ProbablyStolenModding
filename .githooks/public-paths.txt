@@ -39,3 +39,4 @@ Moneylending/workshop/page/
 F5ForceSave/workshop/page/
 F5SnapshotSave/workshop/page/
 GunsmithExpansion/workshop/page/
+CookingStation/workshop/page/
